@@ -8,9 +8,6 @@ setup(
     install_requires=[
         'Flask',
         'requests',
-        'functools',
-        'urllib',
-        'datetime',
-        'logging'
+        'functools'
     ],
 )
