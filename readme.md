@@ -1,6 +1,3 @@
-Hier is een voorstel voor een README-bestand waarin wordt uitgelegd hoe de rpr_oauth-package werkt, inclusief een beschrijving van de Flask-route:
-
-```markdown
 # rpr_oauth
 
 `rpr_oauth` is een Python-package dat OAuth-functionaliteit biedt voor Flask-applicaties. Het bevat hulpmiddelen voor authenticatie, tokenbeheer, en sessiebeheer. Deze package is ontworpen om eenvoudig te integreren in een bestaande Flask-applicatie.
@@ -11,7 +8,7 @@ Hier is een voorstel voor een README-bestand waarin wordt uitgelegd hoe de rpr_o
 2. Installeer de vereisten met pip:
    ```bash
    pip install -r requirements.txt
-   ```
+
 3. Voeg de package toe aan je Flask-applicatie.
 
 ## Functionaliteiten
@@ -112,14 +109,3 @@ De package gebruikt de omgevingsvariabele `RPR_OAUTH_BASE_URL` om de basis-URL v
    ```
 
 3. Zorg ervoor dat de OAuth-server correct is geconfigureerd om de callback-URL (`/oauth/callback`) te ondersteunen.
-
-## Bijdragen
-
-Voel je vrij om bij te dragen aan dit project door pull requests in te dienen of issues te melden.
-
-## Licentie
-
-Dit project is gelicenseerd onder de MIT-licentie.
-```
-
-Laat me weten of je nog aanpassingen of uitbreidingen wilt!
