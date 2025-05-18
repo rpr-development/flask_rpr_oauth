@@ -5,7 +5,15 @@ with open('requirements.txt') as f:
 
 setup(
     name='rpr_oauth',
-    version='0.0.1',
+    use_scm_version=True,
+    setup_requires=['setuptools-scm'],
     packages=find_packages(),
-    install_requires=requirements,
+    install_requires=[
+        'Flask',
+        'requests',
+        'functools',
+        'urllib',
+        'datetime',
+        'logging'
+    ],
 )
