@@ -109,11 +109,3 @@ De package gebruikt de omgevingsvariabele `RPR_OAUTH_BASE_URL` om de basis-URL v
    ```
 
 3. Zorg ervoor dat de OAuth-server correct is geconfigureerd om de callback-URL (`/oauth/callback`) te ondersteunen.
-
-## Bijdragen
-
-Voel je vrij om bij te dragen aan dit project door pull requests in te dienen of issues te melden.
-
-## Licentie
-
-Dit project is gelicenseerd onder de MIT-licentie.
