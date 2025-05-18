@@ -1,5 +1,3 @@
-Hier is een voorstel voor een README-bestand waarin wordt uitgelegd hoe de rpr_oauth-package werkt, inclusief een beschrijving van de Flask-route:
-
 ```markdown
 # rpr_oauth
 
