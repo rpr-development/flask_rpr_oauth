@@ -3,7 +3,7 @@ import logging
 from flask import request, session, redirect, url_for
 
 from . import oauth
-from .. import login_user
+from .. import set_oauth
 
 @oauth.route('/callback', methods=['GET', 'POST'])
 def callback():
@@ -18,7 +18,7 @@ def callback():
         logging.error("Missing token information, got:", request.args)
         raise Exception("Missing token information")
 
-    login_user(
+    set_oauth(
         user_id,
         token,
         refresh_token,

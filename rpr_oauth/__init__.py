@@ -69,7 +69,7 @@ def refresh_token(needing_2fa=False):
             logging.debug(data)
             if response.status_code == 200 and "access_token" in data:
                 # Sla de nieuwe tokens op in de sessie
-                login_user(
+                set_oauth(
                     data.get("user_id", get_user_id()),
                     access_token=data.get("access_token"),
                     refresh_token=data.get("refresh_token"),
@@ -77,15 +77,15 @@ def refresh_token(needing_2fa=False):
                     twofa_validated=data.get("twofa_validated", False)
                 )
             else:
-                logout_user()
+                unset_oauth()
                 redirect_to_login()
     except Exception as e:
         logging.exception("Error refreshing token: %s", str(e))
         # Log the error and redirect to login
-        logout_user()
+        unset_oauth()
         redirect_to_login()
 
-def login_user(user_id, access_token, refresh_token, expires_at, twofa_validated=False):
+def set_oauth(user_id, access_token, refresh_token, expires_at, twofa_validated=False):
     """
     Log the user in using the provided token information.
 
@@ -104,7 +104,7 @@ def login_user(user_id, access_token, refresh_token, expires_at, twofa_validated
 
     session.modified = True
 
-def logout_user():
+def unset_oauth():
     """
     Log the user out and clear the session.
     """
