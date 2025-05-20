@@ -1,4 +1,6 @@
 import os
+from zoneinfo import ZoneInfo
+
 import requests
 import logging
 
@@ -52,10 +54,21 @@ def is_token_expired():
     If the token is expired, return True.
     If the token is not expired, return False.
     """
-    if "expires_at" in session:
+    print(session)
+    if not "expires_at" in session:
         return True
-    
-    return datetime.fromtimestamp(get_expires_at()) < datetime.now()
+
+    now = datetime.now(ZoneInfo("Europe/Amsterdam"))
+
+    # Voeg tijdzone toe aan expires_at
+    expires_at = datetime.strptime(get_expires_at(), "%Y-%m-%d %H:%M:%S.%f")
+    expires_at = expires_at.replace(tzinfo=ZoneInfo("Europe/Amsterdam"))
+
+    print(now)
+    print(expires_at)
+
+    return expires_at < now
+
 
 def refresh_token(needing_2fa=False):
     """
