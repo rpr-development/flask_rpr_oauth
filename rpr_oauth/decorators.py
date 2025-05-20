@@ -1,4 +1,5 @@
 from functools import wraps
+import logging
 
 def oauth_required(f):
     """
@@ -20,10 +21,12 @@ def oauth_required(f):
 
         if is_authenticated():
             if is_token_expired():
+                logging.info("Token expired, refreshing token")
                 return refresh_token()
             else:
                 return f(*args, **kwargs)
         else:
+            logging.info("User not authenticated, redirecting to login")
             return redirect_to_login()
 
     return decorated_function
@@ -48,12 +51,15 @@ def oauth_2fa_required(f):
 
         if is_authenticated():
             if is_token_expired():
+                logging.info("Token expired, refreshing token")
                 return refresh_token(needing_2fa=True)
             elif not get_is_2fa():
+                logging.info("User not authenticated with 2FA, redirecting to login")
                 return redirect_to_login(needing_2fa=True)
             else:
                 return f(*args, **kwargs)
         else:
+            logging.info("User not authenticated, redirecting to login")
             return redirect_to_login(needing_2fa=True)
         
     return decorated_function

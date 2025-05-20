@@ -44,8 +44,6 @@ def redirect_to_login(needing_2fa=False):
     # Append query parameters to the base URL
     login_url = f"{base_url}?{urlencode(query_params)}"
 
-    logging.error("Redirecting to login URL: %s", login_url)
-
     return redirect(login_url, code=302)
 
 def is_token_expired():
@@ -54,7 +52,6 @@ def is_token_expired():
     If the token is expired, return True.
     If the token is not expired, return False.
     """
-    print(session)
     if not "expires_at" in session:
         return True
 
@@ -63,9 +60,6 @@ def is_token_expired():
     # Voeg tijdzone toe aan expires_at
     expires_at = datetime.strptime(get_expires_at(), "%Y-%m-%d %H:%M:%S.%f")
     expires_at = expires_at.replace(tzinfo=ZoneInfo("Europe/Amsterdam"))
-
-    print(now)
-    print(expires_at)
 
     return expires_at < now
 
@@ -76,6 +70,7 @@ def refresh_token(needing_2fa=False):
     If the refresh token is not present, redirect to the login page.
     """
     try:
+        logging.debug("Token is expired, refreshing token")
         if "refresh_token" not in session:
             logging.debug("Geen refresh token in sessie")
             redirect_to_login(needing_2fa=needing_2fa)
@@ -87,7 +82,6 @@ def refresh_token(needing_2fa=False):
 
             response = requests.post(url, json=payload)
             data = response.json()
-            logging.debug(data)
             if response.status_code == 200 and "access_token" in data:
                 # Sla de nieuwe tokens op in de sessie
                 set_oauth(

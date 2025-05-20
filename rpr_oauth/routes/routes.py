@@ -7,8 +7,6 @@ from .. import set_oauth
 
 @oauth.route('/callback', methods=['GET', 'POST'])
 def callback():
-    print("login handler")
-    logging.error("login handler")
     token = request.args.get("access_token")
     refresh_token = request.args.get("refresh_token")
     expires_at = request.args.get("expires_at")
