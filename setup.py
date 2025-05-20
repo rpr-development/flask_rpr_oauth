@@ -8,7 +8,6 @@ setup(
     install_requires=[
         'Flask',
         'requests',
-        'itsdangerous',
-        'ZoneInfo'
+        'itsdangerous'
     ],
 )
