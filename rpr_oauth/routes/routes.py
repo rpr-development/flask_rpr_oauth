@@ -21,7 +21,7 @@ def callback():
         token,
         refresh_token,
         expires_at,
-        request.args.get("is_two_factor_authenticated", False)
+        request.args.get("is_two_factor_authenticated", False) == "true"
     )
 
     return redirect(session.pop("next_page", url_for("main.index")))
