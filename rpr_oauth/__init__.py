@@ -2,9 +2,12 @@ import os
 import requests
 import logging
 
+from dotenv import load_dotenv
 from flask import session, redirect, url_for, request, jsonify
 from datetime import datetime
 from urllib.parse import urlencode
+
+from itsdangerous import URLSafeTimedSerializer
 
 from .getters import get_user_id, get_token, get_refresh_token, get_expires_at, get_is_2fa, is_authenticated
 from .decorators import oauth_required, oauth_2fa_required
@@ -14,6 +17,9 @@ from .decorators import oauth_required, oauth_2fa_required
 # refresh tokens, and manage user sessions.
 # The base URL for the OAuth server.
 base_url = os.getenv("RPR_OAUTH_BASE_URL", "https://auth.roleplayreality.nl")
+load_dotenv()
+serializer = URLSafeTimedSerializer(os.getenv("URL_SAFE_TIMED_SERIALIZER_SECRET"))
+
 
 def redirect_to_login(needing_2fa=False):
     """
@@ -24,11 +30,12 @@ def redirect_to_login(needing_2fa=False):
     """
     # Set session next page to the current URL
     session["next_page"] = request.path
-
+    token = serializer.dumps("auth-api-redirect", salt="redirect")
     # Construct query parameters
     query_params = {
         "next": url_for("oauth.callback", _external=True),
-        "2fa_needed": needing_2fa
+        "2fa_needed": needing_2fa,
+        "token": token
     }
 
     # Append query parameters to the base URL
