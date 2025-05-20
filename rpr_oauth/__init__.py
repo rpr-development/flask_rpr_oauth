@@ -2,8 +2,7 @@ import os
 import requests
 import logging
 
-from dotenv import load_dotenv
-from flask import session, redirect, url_for, request, jsonify
+from flask import session, redirect, url_for, request
 from datetime import datetime
 from urllib.parse import urlencode
 
@@ -17,9 +16,6 @@ from .decorators import oauth_required, oauth_2fa_required
 # refresh tokens, and manage user sessions.
 # The base URL for the OAuth server.
 base_url = os.getenv("RPR_OAUTH_BASE_URL", "https://auth.roleplayreality.nl")
-load_dotenv()
-serializer = URLSafeTimedSerializer(os.getenv("URL_SAFE_TIMED_SERIALIZER_SECRET"))
-
 
 def redirect_to_login(needing_2fa=False):
     """
@@ -29,6 +25,11 @@ def redirect_to_login(needing_2fa=False):
     :return: A redirect response to the login page.
     """
     # Set session next page to the current URL
+
+    if not os.getenv("URL_SAFE_TIMED_SERIALIZER_SECRET"):
+        logging.error("URL_SAFE_TIMED_SERIALIZER_SECRET is not set")
+        raise Exception("URL_SAFE_TIMED_SERIALIZER_SECRET is not set")
+    serializer = URLSafeTimedSerializer(os.getenv("URL_SAFE_TIMED_SERIALIZER_SECRET"))
     session["next_page"] = request.path
     token = serializer.dumps("auth-api-redirect", salt="redirect")
     # Construct query parameters
