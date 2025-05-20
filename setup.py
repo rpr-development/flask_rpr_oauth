@@ -9,6 +9,6 @@ setup(
         'Flask',
         'requests',
         'itsdangerous',
-        'zoneinfo'
+        'ZoneInfo'
     ],
 )
