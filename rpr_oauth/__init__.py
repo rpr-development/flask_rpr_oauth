@@ -55,11 +55,10 @@ def is_token_expired():
     if not "expires_at" in session:
         return True
 
-    now = datetime.now(ZoneInfo("Europe/Amsterdam"))
+    expires_at_str = session["expires_at"]
+    expires_at = datetime.fromisoformat(expires_at_str)
 
-    # Voeg tijdzone toe aan expires_at
-    expires_at = datetime.strptime(get_expires_at(), "%Y-%m-%d %H:%M:%S.%f")
-    expires_at = expires_at.replace(tzinfo=ZoneInfo("Europe/Amsterdam"))
+    now = datetime.now(ZoneInfo("Europe/Amsterdam"))
 
     return expires_at < now
 
