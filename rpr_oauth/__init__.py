@@ -90,6 +90,7 @@ def refresh_token(needing_2fa=False):
                     expires_at=data.get("expires_in"),
                     twofa_validated=data.get("twofa_validated", False)
                 )
+                return redirect(request.path)
             else:
                 unset_oauth()
                 redirect_to_login()
