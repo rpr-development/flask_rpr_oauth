@@ -1,0 +1,8 @@
+# Core requirements (minimaal)
+Flask>=2.0.0
+Authlib>=1.0.0
+requests>=2.28.0
+
+# Redis support (optioneel, installeer met pip install flask-rpr-oauth[redis])
+# redis>=4.0.0
+# Flask-Session>=0.5.0
