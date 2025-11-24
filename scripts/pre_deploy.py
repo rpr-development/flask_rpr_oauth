@@ -69,7 +69,7 @@ def run_command(command, description, critical=True):
             capture_output=True,
             text=True,
             check=True,
-            shell=isinstance(command, str)
+            shell=True  # Always use shell for better PATH resolution
         )
         
         if result.stdout:
@@ -123,23 +123,21 @@ def run_linting():
     
     # Flake8 - critical errors only
     run_command(
-        ['flake8', 'flask_rpr_oauth', '--count', '--select=E9,F63,F7,F82', 
-         '--show-source', '--statistics'],
+        'python -m flake8 flask_rpr_oauth --count --select=E9,F63,F7,F82 --show-source --statistics',
         "Flake8 critical errors check",
         critical=True
     )
     
     # Flake8 - all errors (non-critical)
     run_command(
-        ['flake8', 'flask_rpr_oauth', '--count', '--max-complexity=10', 
-         '--max-line-length=127', '--statistics'],
+        'python -m flake8 flask_rpr_oauth --count --max-complexity=10 --max-line-length=127 --statistics',
         "Flake8 full lint check",
         critical=False
     )
     
     # Black format check
     run_command(
-        ['black', '--check', 'flask_rpr_oauth', 'tests', 'examples'],
+        'python -m black --check flask_rpr_oauth tests examples',
         "Black format check",
         critical=False
     )
@@ -150,14 +148,14 @@ def run_tests():
     print_step("Running Unit Tests")
     
     run_command(
-        ['pytest', '-v', '--tb=short'],
+        'python -m pytest -v --tb=short',
         "Unit tests",
         critical=True
     )
     
     # Run with coverage (non-critical)
     run_command(
-        ['pytest', '--cov=flask_rpr_oauth', '--cov-report=term', '--cov-report=html'],
+        'python -m pytest --cov=flask_rpr_oauth --cov-report=term --cov-report=html',
         "Coverage report",
         critical=False
     )
@@ -250,9 +248,11 @@ def main():
     print("Flask RPR OAuth - Pre-Deployment Validation")
     print(f"{'='*60}{RESET}\n")
     
-    # Change to script directory
+    # Change to repository root (parent of script directory)
     script_dir = Path(__file__).parent
-    os.chdir(script_dir)
+    repo_root = script_dir.parent
+    os.chdir(repo_root)
+    print(f"Working directory: {repo_root}\n")
     
     try:
         # Run all checks

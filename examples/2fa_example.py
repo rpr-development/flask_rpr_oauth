@@ -11,12 +11,12 @@ app = Flask(__name__)
 
 # Configuratie
 app.config.update(
-    SECRET_KEY='your-secret-key-change-in-production',
-    OAUTH_BASE_URL='https://auth.roleplayreality.nl',
-    OAUTH_CLIENT_ID='your-client-id',
-    OAUTH_CLIENT_SECRET='your-client-secret',
-    OAUTH_REDIRECT_URI='http://localhost:5000/auth/callback',
-    OAUTH_SCOPE='openid profile email'
+    SECRET_KEY="your-secret-key-change-in-production",
+    OAUTH_BASE_URL="https://auth.roleplayreality.nl",
+    OAUTH_CLIENT_ID="your-client-id",
+    OAUTH_CLIENT_SECRET="your-client-secret",
+    OAUTH_REDIRECT_URI="http://localhost:5000/auth/callback",
+    OAUTH_SCOPE="openid profile email",
 )
 
 # Initialiseer OAuth
@@ -111,132 +111,136 @@ TEMPLATE = """
 """
 
 
-@app.route('/')
+@app.route("/")
 def index():
     """Home page met status overview."""
     return render_template_string(TEMPLATE, current_user=current_user)
 
 
-@app.route('/profile')
+@app.route("/profile")
 @login_required
 def profile():
     """
     Profile page - vereist alleen login, geen 2FA.
     """
-    return jsonify({
-        'email': current_user.email,
-        'name': f"{current_user.voornaam} {current_user.achternaam}",
-        'twofa_validated': current_user.twofa_validated,
-        'permissions': current_user._permissions,
-        'groups': current_user._groups
-    })
+    return jsonify(
+        {
+            "email": current_user.email,
+            "name": f"{current_user.voornaam} {current_user.achternaam}",
+            "twofa_validated": current_user.twofa_validated,
+            "permissions": current_user._permissions,
+            "groups": current_user._groups,
+        }
+    )
 
 
-@app.route('/sensitive')
+@app.route("/sensitive")
 @require_2fa
 def sensitive_data():
     """
     Sensitive endpoint - vereist 2FA validatie.
-    
+
     Als user geen 2FA heeft voltooid, wordt deze automatisch
     doorgestuurd naar de auth server om 2FA te voltooien.
     """
-    return jsonify({
-        'message': 'Toegang verleend tot gevoelige data',
-        'user': current_user.email,
-        'twofa_validated': current_user.twofa_validated,
-        'data': {
-            'secret': 'This is highly sensitive information',
-            'access_level': 'maximum'
+    return jsonify(
+        {
+            "message": "Toegang verleend tot gevoelige data",
+            "user": current_user.email,
+            "twofa_validated": current_user.twofa_validated,
+            "data": {"secret": "This is highly sensitive information", "access_level": "maximum"},
         }
-    })
+    )
 
 
-@app.route('/api/data')
+@app.route("/api/data")
 @require_2fa
 def api_data():
     """
     API endpoint die 2FA vereist.
     """
-    return jsonify({
-        'status': 'success',
-        'twofa_required': True,
-        'twofa_validated': current_user.twofa_validated,
-        'data': [
-            {'id': 1, 'value': 'Secret data 1'},
-            {'id': 2, 'value': 'Secret data 2'},
-            {'id': 3, 'value': 'Secret data 3'}
-        ]
-    })
+    return jsonify(
+        {
+            "status": "success",
+            "twofa_required": True,
+            "twofa_validated": current_user.twofa_validated,
+            "data": [
+                {"id": 1, "value": "Secret data 1"},
+                {"id": 2, "value": "Secret data 2"},
+                {"id": 3, "value": "Secret data 3"},
+            ],
+        }
+    )
 
 
-@app.route('/force-2fa')
+@app.route("/force-2fa")
 @login_required
 def force_2fa():
     """
     Force 2FA validation - redirect direct naar 2FA pagina.
     """
     from flask import redirect
-    
+
     # Check of 2FA al is voltooid
     if current_user.twofa_validated:
-        return jsonify({
-            'message': '2FA is al voltooid',
-            'status': 'already_validated'
-        })
-    
+        return jsonify({"message": "2FA is al voltooid", "status": "already_validated"})
+
     # Haal RPRAuth instance op
-    rpr_auth = app.extensions['rpr_auth']
-    
+    rpr_auth = app.extensions["rpr_auth"]
+
     # Genereer 2FA redirect URL
-    redirect_url = rpr_auth.get_2fa_redirect_url(next_url='http://localhost:5000/')
-    
+    redirect_url = rpr_auth.get_2fa_redirect_url(next_url="http://localhost:5000/")
+
     return redirect(redirect_url)
 
 
-@app.route('/check-2fa')
+@app.route("/check-2fa")
 @login_required
 def check_2fa():
     """
     Check 2FA status via API call naar auth server.
-    
+
     Dit endpoint valideert de actuele 2FA status bij de auth server
     en update de session.
     """
-    rpr_auth = app.extensions['rpr_auth']
-    
+    rpr_auth = app.extensions["rpr_auth"]
+
     # Valideer 2FA bij auth server
     is_valid = rpr_auth.validate_2fa()
-    
-    return jsonify({
-        'twofa_validated': is_valid,
-        'session_status': current_user.twofa_validated,
-        'message': '2FA is geldig' if is_valid else '2FA validatie vereist'
-    })
+
+    return jsonify(
+        {
+            "twofa_validated": is_valid,
+            "session_status": current_user.twofa_validated,
+            "message": "2FA is geldig" if is_valid else "2FA validatie vereist",
+        }
+    )
 
 
 @app.errorhandler(403)
 def forbidden(e):
     """Handle 403 Forbidden errors."""
-    return jsonify({
-        'error': 'Forbidden',
-        'message': 'Je hebt geen toegang tot deze resource'
-    }), 403
+    return jsonify({"error": "Forbidden", "message": "Je hebt geen toegang tot deze resource"}), 403
 
 
 @app.errorhandler(401)
 def unauthorized(e):
     """Handle 401 Unauthorized errors."""
-    return jsonify({
-        'error': 'Unauthorized',
-        'message': 'Je moet ingelogd zijn om deze resource te benaderen'
-    }), 401
+    return (
+        jsonify(
+            {
+                "error": "Unauthorized",
+                "message": "Je moet ingelogd zijn om deze resource te benaderen",
+            }
+        ),
+        401,
+    )
 
 
-if __name__ == '__main__':
-    print("\n" + "="*60)
+if __name__ == "__main__":
+    print("\n" + "=" * 60)
     print("🔐 Flask RPR OAuth - 2FA Example")
-    print("="*60)
+    print("=" * 60)
     print("\nEndpoints:")
     print("  http://localhost:5000/           - Home page")
     print("  http://localhost:5000/profile    - Profile (@login_required)")
@@ -248,6 +252,6 @@ if __name__ == '__main__':
     print("  http://localhost:5000/auth/callback - OAuth callback")
     print("  http://localhost:5000/auth/logout   - Logout")
     print("\nZorg dat je OAUTH_CLIENT_ID en OAUTH_CLIENT_SECRET configureert!")
-    print("="*60 + "\n")
-    
+    print("=" * 60 + "\n")
+
     app.run(debug=True, port=5000)
