@@ -15,31 +15,31 @@ from flask_rpr_oauth import (
     any_permission_required,
     group_required,
     any_group_required,
-    current_user
+    current_user,
 )
 
 app = Flask(__name__)
 
 # Basis configuratie
-app.config['SECRET_KEY'] = 'your-secret-key-here'
+app.config["SECRET_KEY"] = "your-secret-key-here"
 
 # OAuth configuratie
-app.config['OAUTH_BASE_URL'] = 'https://auth.roleplayreality.nl'
-app.config['OAUTH_CLIENT_ID'] = 'your-client-id'
-app.config['OAUTH_CLIENT_SECRET'] = 'your-client-secret'
-app.config['OAUTH_REDIRECT_URI'] = 'http://localhost:5000/auth/callback'
-app.config['OAUTH_SCOPE'] = 'openid profile email'
-app.config['OAUTH_AUTO_VALIDATE'] = True
+app.config["OAUTH_BASE_URL"] = "https://auth.roleplayreality.nl"
+app.config["OAUTH_CLIENT_ID"] = "your-client-id"
+app.config["OAUTH_CLIENT_SECRET"] = "your-client-secret"
+app.config["OAUTH_REDIRECT_URI"] = "http://localhost:5000/auth/callback"
+app.config["OAUTH_SCOPE"] = "openid profile email"
+app.config["OAUTH_AUTO_VALIDATE"] = True
 
 # Redis session configuratie
-app.config['SESSION_TYPE'] = 'redis'
-app.config['SESSION_PERMANENT'] = True
-app.config['SESSION_USE_SIGNER'] = True
-app.config['SESSION_KEY_PREFIX'] = 'myapp:'
-app.config['SESSION_REDIS'] = redis.from_url('redis://localhost:6379/0')
+app.config["SESSION_TYPE"] = "redis"
+app.config["SESSION_PERMANENT"] = True
+app.config["SESSION_USE_SIGNER"] = True
+app.config["SESSION_KEY_PREFIX"] = "myapp:"
+app.config["SESSION_REDIS"] = redis.from_url("redis://localhost:6379/0")
 
 # Webhook configuratie
-app.config['WEBHOOK_SECRET'] = 'your-webhook-secret'
+app.config["WEBHOOK_SECRET"] = "your-webhook-secret"
 
 # Initialiseer session
 Session(app)
@@ -48,11 +48,12 @@ Session(app)
 auth = RPRAuth(app)
 
 
-@app.route('/')
+@app.route("/")
 def index():
     """Home page."""
     if current_user.is_authenticated:
-        return render_template_string('''
+        return render_template_string(
+            """
             <h1>Welkom, {{ user.voornaam }}!</h1>
             <p>Email: {{ user.email }}</p>
             <ul>
@@ -64,19 +65,24 @@ def index():
                 <li><a href="/admin">Admin panel (admin.access)</a></li>
             </ul>
             <p><a href="/auth/logout">Uitloggen</a></p>
-        ''', user=current_user)
+        """,
+            user=current_user,
+        )
     else:
-        return render_template_string('''
+        return render_template_string(
+            """
             <h1>Welkom!</h1>
             <p><a href="/auth/login">Inloggen met RPR Auth</a></p>
-        ''')
+        """
+        )
 
 
-@app.route('/profile')
+@app.route("/profile")
 @login_required
 def profile():
     """User profile page."""
-    return render_template_string('''
+    return render_template_string(
+        """
         <h1>Profiel</h1>
         <p>OAuth ID: {{ user.oauth_id }}</p>
         <p>Email: {{ user.email }}</p>
@@ -105,74 +111,88 @@ def profile():
         {% endif %}
         
         <p><a href="/">Terug</a></p>
-    ''', user=current_user)
+    """,
+        user=current_user,
+    )
 
 
-@app.route('/users')
+@app.route("/users")
 @login_required
-@permission_required('users.read')
+@permission_required("users.read")
 def list_users():
     """User list (requires users.read permission)."""
-    return render_template_string('''
+    return render_template_string(
+        """
         <h1>Gebruikers Lijst</h1>
         <p>Je hebt de 'users.read' permission!</p>
         <p><a href="/">Terug</a></p>
-    ''')
+    """
+    )
 
 
-@app.route('/moderate')
+@app.route("/moderate")
 @login_required
-@any_permission_required('moderator', 'admin')
+@any_permission_required("moderator", "admin")
 def moderate():
     """Moderation panel (requires moderator OR admin permission)."""
-    return render_template_string('''
+    return render_template_string(
+        """
         <h1>Moderatie Panel</h1>
         <p>Je hebt 'moderator' of 'admin' permission!</p>
         <p><a href="/">Terug</a></p>
-    ''')
+    """
+    )
 
 
-@app.route('/staff')
+@app.route("/staff")
 @login_required
-@group_required('staff')
+@group_required("staff")
 def staff_panel():
     """Staff panel (requires staff group membership)."""
-    return render_template_string('''
+    return render_template_string(
+        """
         <h1>Staff Panel</h1>
         <p>Je bent lid van de 'staff' groep!</p>
         <p><a href="/">Terug</a></p>
-    ''')
+    """
+    )
 
 
-@app.route('/special')
+@app.route("/special")
 @login_required
-@any_group_required('vip', 'premium', 'admin')
+@any_group_required("vip", "premium", "admin")
 def special_content():
     """Special content (requires VIP, Premium, or Admin group)."""
-    return render_template_string('''
+    return render_template_string(
+        """
         <h1>Special Content</h1>
         <p>Je bent lid van 'vip', 'premium', of 'admin' groep!</p>
         <p><a href="/">Terug</a></p>
-    ''')
+    """
+    )
 
 
-@app.route('/admin')
+@app.route("/admin")
 @login_required
-@permission_required('admin.access')
+@permission_required("admin.access")
 def admin():
     """Admin panel (requires admin.access permission)."""
-    return render_template_string('''
+    return render_template_string(
+        """
         <h1>Admin Panel</h1>
         <p>Welkom in het admin panel, {{ user.voornaam }}!</p>
         <p><a href="/">Terug</a></p>
-    ''', user=current_user)
+    """,
+        user=current_user,
+    )
 
 
-@app.route('/debug')
+@app.route("/debug")
 @login_required
 def debug():
     """Debug info (voor development)."""
-    return render_template_string('''
+    return render_template_string(
+        """
         <h1>Debug Info</h1>
         <h2>Current User</h2>
         <pre>{{ user }}</pre>
@@ -181,8 +201,11 @@ def debug():
         <pre>{{ session }}</pre>
         
         <p><a href="/">Terug</a></p>
-    ''', user=current_user, session=dict(session))
+    """,
+        user=current_user,
+        session=dict(session),
+    )
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     app.run(debug=True, port=5000)
