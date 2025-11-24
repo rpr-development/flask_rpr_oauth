@@ -1,0 +1,7 @@
+# Flask RPR OAuth
+
+include README.md
+include LICENSE
+include requirements.txt
+recursive-include flask_rpr_oauth *.py
+recursive-include examples *.py
