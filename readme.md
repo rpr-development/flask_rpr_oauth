@@ -1,6 +1,22 @@
 # rpr_oauth
 
+````markdown
+# ⚠️ LEGACY CODE - DEPRECATED
+
+> **WAARSCHUWING**: Deze code is deprecated en wordt niet meer onderhouden.
+> 
+> Voor de moderne, productie-ready implementatie, zie de **main branch**:
+> - 📦 [flask_rpr_oauth v1.0.0](https://github.com/rpr-development/flask_rpr_oauth)
+> - 📖 [Volledige documentatie](https://github.com/rpr-development/flask_rpr_oauth/blob/main/README.md)
+> - ⚠️ [Waarom deze code deprecated is](README_LEGACY.md)
+
+---
+
+# rpr_oauth (Legacy)
+
 `rpr_oauth` is een Python-package dat OAuth-functionaliteit biedt voor Flask-applicaties. Het bevat hulpmiddelen voor authenticatie, tokenbeheer, en sessiebeheer. Deze package is ontworpen om eenvoudig te integreren in een bestaande Flask-applicatie.
+
+**⚠️ Deze implementatie mist belangrijke features zoals webhooks, 2FA integratie, en proper error handling. Gebruik de nieuwe `flask_rpr_oauth` package in plaats daarvan.**
 
 ## Installatie
 
