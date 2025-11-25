@@ -6,7 +6,7 @@ Utility scripts voor flask-rpr-oauth development en deployment.
 
 Valideer de code voordat je deploy naar GitHub.
 
-### Python Script (Aanbevolen)
+### Python Script
 
 ```bash
 python scripts/pre_deploy.py
@@ -24,19 +24,6 @@ python scripts/pre_deploy.py
 - ✅ Version consistency (\_\_init\_\_.py, setup.py, pyproject.toml)
 - ✅ CHANGELOG check
 - ✅ Package build test
-
-### Bash Script (Linux/Mac)
-
-```bash
-chmod +x scripts/pre_deploy.sh
-./scripts/pre_deploy.sh
-```
-
-### PowerShell Script (Windows)
-
-```powershell
-.\scripts\pre_deploy.ps1
-```
 
 ## Required Dependencies
 
