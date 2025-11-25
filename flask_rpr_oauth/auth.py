@@ -257,6 +257,7 @@ class RPRAuth:
             response = requests.get(
                 f"{current_app.config['OAUTH_BASE_URL']}/oauth/userinfo",
                 headers={"Authorization": f"Bearer {access_token}"},
+                timeout=10,
             )
 
             return response.status_code == 200
@@ -289,6 +290,7 @@ class RPRAuth:
             response = requests.get(
                 f"{current_app.config['OAUTH_BASE_URL']}/api/v1/validate",
                 headers={"Authorization": f"Bearer {access_token}"},
+                timeout=10,
             )
 
             if response.status_code == 200:

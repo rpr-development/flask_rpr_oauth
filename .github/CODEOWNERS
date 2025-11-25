@@ -1,0 +1,17 @@
+# CODEOWNERS file
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# These owners will be the default owners for everything in the repo
+* @rpr-development
+
+# Core package
+/flask_rpr_oauth/ @rpr-development
+
+# Tests
+/tests/ @rpr-development
+
+# Documentation
+*.md @rpr-development
+
+# CI/CD and GitHub configuration
+/.github/ @rpr-development
