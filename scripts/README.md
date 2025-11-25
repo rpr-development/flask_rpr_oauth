@@ -13,12 +13,16 @@ python scripts/pre_deploy.py
 ```
 
 **Checks:**
-- ✅ Dependencies geïnstalleerd
+- ✅ Git status (uncommitted changes, branch check)
+- ✅ Dependencies geïnstalleerd (pytest, flake8, black, build, bandit, mypy)
 - ✅ Linting (flake8) - critical errors
+- ✅ Security scan (bandit) - critical voor auth library!
+- ✅ Type checking (mypy)
 - ✅ Code formatting (black)
 - ✅ Unit tests (pytest)
 - ✅ Coverage report
-- ✅ Version consistency (\_\_init\_\_.py vs setup.py)
+- ✅ Version consistency (\_\_init\_\_.py, setup.py, pyproject.toml)
+- ✅ CHANGELOG check
 - ✅ Package build test
 
 ### Bash Script (Linux/Mac)
@@ -32,6 +36,21 @@ chmod +x scripts/pre_deploy.sh
 
 ```powershell
 .\scripts\pre_deploy.ps1
+```
+
+## Required Dependencies
+
+Install the development dependencies before running pre-deploy:
+
+```bash
+pip install pytest pytest-cov black flake8 mypy bandit build
+```
+
+Or install all dev dependencies:
+
+```bash
+pip install -e ".[dev]"
+pip install bandit build
 ```
 
 ## Workflow

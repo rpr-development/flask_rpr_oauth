@@ -3,10 +3,15 @@
 Pre-deployment validation script voor flask-rpr-oauth.
 
 Dit script controleert:
+- Git status (uncommitted changes)
 - Code quality (linting)
+- Security (bandit)
+- Type checking (mypy)
 - Tests (unit tests)
+- Coverage
+- Version consistency (across all config files)
+- CHANGELOG updates
 - Package building
-- Version consistency
 
 Run dit script voordat je:
 - Een nieuwe tag/release maakt
@@ -17,7 +22,9 @@ Run dit script voordat je:
 import sys
 import subprocess
 import os
+import re
 from pathlib import Path
+from datetime import datetime
 
 # Kleuren voor output
 GREEN = '\033[92m'
@@ -98,7 +105,7 @@ def check_dependencies():
     """Check if required dependencies are installed."""
     print_step("Checking Dependencies")
     
-    required = ['pytest', 'flake8', 'black', 'build']
+    required = ['pytest', 'flake8', 'black', 'build', 'bandit', 'mypy']
     missing = []
     
     for package in required:
@@ -115,6 +122,45 @@ def check_dependencies():
         sys.exit(1)
     
     print_success("All dependencies are installed")
+
+
+def check_git_status():
+    """Check for uncommitted changes."""
+    print_step("Checking Git Status")
+    
+    try:
+        # Check for uncommitted changes
+        result = subprocess.run(
+            ['git', 'status', '--porcelain'],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        
+        if result.stdout.strip():
+            print_warning("You have uncommitted changes:")
+            print(result.stdout)
+            print_warning("Consider committing or stashing changes before deployment")
+        else:
+            print_success("Working directory is clean")
+        
+        # Show current branch
+        branch_result = subprocess.run(
+            ['git', 'branch', '--show-current'],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        current_branch = branch_result.stdout.strip()
+        print(f"Current branch: {current_branch}")
+        
+        if current_branch != 'main':
+            print_warning(f"You are not on 'main' branch (current: {current_branch})")
+        
+    except subprocess.CalledProcessError as e:
+        print_warning(f"Could not check git status: {e}")
+    except FileNotFoundError:
+        print_warning("Git not found - skipping git status check")
 
 
 def run_linting():
@@ -143,6 +189,38 @@ def run_linting():
     )
 
 
+def run_security_check():
+    """Run security checks with bandit."""
+    print_step("Running Security Checks")
+    
+    # Bandit security scan
+    run_command(
+        'python -m bandit -r flask_rpr_oauth -ll',  # -ll = medium and high severity only
+        "Bandit security scan",
+        critical=True  # Critical for auth library!
+    )
+    
+    # Also check examples for security issues (non-critical)
+    run_command(
+        'python -m bandit -r examples -ll',
+        "Bandit scan on examples",
+        critical=False
+    )
+    
+    print_success("No security issues found")
+
+
+def run_type_checking():
+    """Run static type checking with mypy."""
+    print_step("Running Type Checks")
+    
+    run_command(
+        'python -m mypy flask_rpr_oauth --ignore-missing-imports --no-error-summary',
+        "Mypy type checking",
+        critical=False  # Non-critical as some code may not have type hints yet
+    )
+
+
 def run_tests():
     """Run unit tests."""
     print_step("Running Unit Tests")
@@ -162,38 +240,84 @@ def run_tests():
 
 
 def check_version_consistency():
-    """Check if version numbers are consistent."""
+    """Check if version numbers are consistent across all config files."""
     print_step("Checking Version Consistency")
+    
+    versions = {}
     
     # Read version from __init__.py
     init_file = Path('flask_rpr_oauth/__init__.py')
-    init_version = None
-    
     with open(init_file) as f:
         for line in f:
             if line.startswith('__version__'):
-                init_version = line.split('=')[1].strip().strip('"').strip("'")
+                versions['__init__.py'] = line.split('=')[1].strip().strip('"').strip("'")
                 break
     
     # Read version from setup.py
     setup_file = Path('setup.py')
-    setup_version = None
-    
     with open(setup_file) as f:
         for line in f:
             if 'version=' in line:
-                setup_version = line.split('=')[1].strip().strip(',').strip('"').strip("'")
+                versions['setup.py'] = line.split('=')[1].strip().strip(',').strip('"').strip("'")
                 break
     
-    print(f"Version in __init__.py: {init_version}")
-    print(f"Version in setup.py: {setup_version}")
+    # Read version from pyproject.toml
+    pyproject_file = Path('pyproject.toml')
+    if pyproject_file.exists():
+        with open(pyproject_file) as f:
+            for line in f:
+                if line.strip().startswith('version'):
+                    match = re.search(r'version\s*=\s*["\']([^"\']+)["\']', line)
+                    if match:
+                        versions['pyproject.toml'] = match.group(1)
+                        break
     
-    if init_version != setup_version:
-        print_error("Version mismatch between __init__.py and setup.py")
+    # Display found versions
+    print("Found versions:")
+    for file, version in versions.items():
+        print(f"  {file}: {version}")
+    
+    # Check consistency
+    unique_versions = set(versions.values())
+    if len(unique_versions) > 1:
+        print_error("Version mismatch detected!")
+        for file, version in versions.items():
+            print(f"  {file}: {version}")
         sys.exit(1)
     
-    print_success(f"Version is consistent: {init_version}")
-    return init_version
+    version = list(versions.values())[0] if versions else None
+    print_success(f"Version is consistent: {version}")
+    return version
+
+
+def check_changelog():
+    """Check if CHANGELOG has been updated."""
+    print_step("Checking CHANGELOG")
+    
+    changelog_files = ['CHANGELOG.md', 'HISTORY.md', 'CHANGES.md']
+    changelog_path = None
+    
+    for filename in changelog_files:
+        if Path(filename).exists():
+            changelog_path = Path(filename)
+            break
+    
+    if not changelog_path:
+        print_warning("No CHANGELOG file found (CHANGELOG.md, HISTORY.md, or CHANGES.md)")
+        print("Consider creating a CHANGELOG.md to track changes")
+        return
+    
+    print(f"Found: {changelog_path}")
+    
+    # Check if changelog has recent entries (look for current year)
+    current_year = str(datetime.now().year)
+    with open(changelog_path) as f:
+        content = f.read()
+        if current_year in content:
+            print_success(f"CHANGELOG contains entries for {current_year}")
+        else:
+            print_warning(f"CHANGELOG may not have recent entries (no {current_year} found)")
+            print("Consider updating the CHANGELOG before release")
 
 
 def build_package():
@@ -257,9 +381,13 @@ def main():
     try:
         # Run all checks
         check_dependencies()
+        check_git_status()
         run_linting()
+        run_security_check()
+        run_type_checking()
         run_tests()
         version = check_version_consistency()
+        check_changelog()
         build_package()
         test_installation()
         
