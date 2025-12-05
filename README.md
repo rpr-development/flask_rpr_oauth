@@ -6,12 +6,47 @@ Een Flask extensie voor OAuth 2.0 / OpenID Connect authenticatie met [auth.rolep
 
 - 🔐 **OAuth 2.0 / OpenID Connect** - Volledige OAuth flow (authorization code flow)
 - 👤 **User Management** - Automatische gebruiker synchronisatie met permissions en groepen
-- 🔒 **Session-based Auth** - Pure Flask sessions, geen Flask-Login dependency
+- 🔒 **Session-based Auth** - Pure Flask sessions voor web applicaties
+- 🚀 **Stateless API Mode** - Bearer token support voor REST APIs en M2M
+- 🤖 **M2M Token Support** - Client credentials flow voor server-to-server
 - 🎫 **Token Management** - Automatische token refresh en validatie
 - 🔑 **Two-Factor Authentication** - Volledige 2FA integratie met `@require_2fa` decorator
 - 🪝 **Webhook Support** - Real-time token revocation en gebruiker updates
 - ⚡ **Redis Sessions** - Optionele server-side session storage
-- 🛡️ **Decorators** - `@login_required`, `@permission_required`, `@group_required`, `@require_2fa`
+- 🛡️ **Decorators** - Session-based én stateless permission checks
+
+## Gebruik Cases
+
+### Session-Based (Web Applicaties)
+
+```python
+from flask_rpr_oauth import RPRAuth, login_required, permission_required
+
+app = Flask(__name__)
+auth = RPRAuth(app)  # Auto-registreert /auth/login, /auth/callback
+
+@app.route('/dashboard')
+@login_required
+def dashboard():
+    return render_template('dashboard.html')
+```
+
+### Stateless (REST APIs & M2M)
+
+```python
+from flask_rpr_oauth import permission_required_stateless
+
+app = Flask(__name__)
+app.config['OAUTH_BASE_URL'] = 'https://auth.roleplayreality.nl'
+
+@app.route('/api/kick-player', methods=['POST'])
+@permission_required_stateless('fivem.player.kick')
+def kick_player(userinfo):
+    # Werkt voor M2M tokens EN user tokens!
+    return {'status': 'success'}
+```
+
+👉 **[Stateless API Mode Documentation](STATELESS.md)** - Voor REST APIs, M2M tokens, microservices
 
 ## Installatie
 
