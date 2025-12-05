@@ -91,6 +91,107 @@ class RPRAuth:
         app.extensions = getattr(app, "extensions", {})
         app.extensions["rpr_auth"] = self
 
+    def _handle_login(self):
+        """Start OAuth login flow."""
+        redirect_uri = current_app.config["OAUTH_REDIRECT_URI"]
+        return self.auth_server.authorize_redirect(redirect_uri)
+
+    def _handle_callback(self):
+        """OAuth callback handler."""
+        try:
+            # Haal token op
+            token = self.auth_server.authorize_access_token()
+            userinfo = self.auth_server.userinfo()
+
+            # Sla token op in session
+            session["oauth_token"] = token
+            session["oauth_user"] = {
+                "oauth_id": userinfo["sub"],
+                "email": userinfo.get("email", ""),
+                "voornaam": userinfo.get("given_name", ""),
+                "achternaam": userinfo.get("family_name", ""),
+            }
+            session["oauth_permissions"] = userinfo.get("permissions", [])
+            session["oauth_groups"] = userinfo.get("groups", [])
+
+            # Sla 2FA status op
+            twofa_validated = token.get("twofa_validated", False) or userinfo.get(
+                "twofa_validated", False
+            )
+            session["twofa_validated"] = twofa_validated
+
+            logger.info(f"User {userinfo.get('email')} succesvol ingelogd (2FA: {twofa_validated})")
+
+            # Redirect naar next of home
+            next_page = session.pop("next", None) or url_for("index")
+            return redirect(next_page)
+
+        except Exception as e:
+            logger.error(f"OAuth callback error: {e}")
+            raise OAuthError(f"Login mislukt: {str(e)}")
+
+    def _handle_logout(self):
+        """Logout en clear session."""
+        session.clear()
+        logger.info("User uitgelogd")
+        return redirect(url_for("index"))
+
+    def _handle_refresh(self):
+        """Refresh access token."""
+        if "oauth_token" not in session:
+            raise OAuthError("Geen token gevonden")
+
+        try:
+            token = session["oauth_token"]
+            new_token = self.auth_server.fetch_access_token(
+                refresh_token=token.get("refresh_token")
+            )
+            session["oauth_token"] = new_token
+            logger.info("Token succesvol gerefreshed")
+            return jsonify({"status": "success"})
+
+        except Exception as e:
+            logger.error(f"Token refresh error: {e}")
+            raise TokenExpiredError("Token refresh mislukt")
+
+    def _verify_webhook_secret(self):
+        """Verify webhook secret if configured."""
+        if current_app.config["WEBHOOK_SECRET"]:
+            provided_secret = request.headers.get("X-Webhook-Secret")
+            if provided_secret != current_app.config["WEBHOOK_SECRET"]:
+                return jsonify({"error": "Invalid secret"}), 401
+        return None
+
+    def _handle_webhook_token_revoked(self):
+        """Webhook voor token revocation."""
+        error_response = self._verify_webhook_secret()
+        if error_response:
+            return error_response
+
+        data = request.get_json()
+        oauth_id = data.get("sub")
+
+        if current_user.is_authenticated and current_user.oauth_id == oauth_id:
+            session.clear()
+            logger.info(f"User {oauth_id} uitgelogd door token revocation")
+
+        return jsonify({"status": "success"})
+
+    def _handle_webhook_user_deleted(self):
+        """Webhook voor user deletion."""
+        error_response = self._verify_webhook_secret()
+        if error_response:
+            return error_response
+
+        data = request.get_json()
+        oauth_id = data.get("sub")
+
+        if current_user.is_authenticated and current_user.oauth_id == oauth_id:
+            session.clear()
+            logger.info(f"User {oauth_id} uitgelogd door account deletion")
+
+        return jsonify({"status": "success"})
+
     def _register_routes(self, app):
         """
         Registreer auth Blueprint met routes.
@@ -100,120 +201,23 @@ class RPRAuth:
         """
         auth_bp = Blueprint("auth", __name__, url_prefix="/auth")
 
-        @auth_bp.route("/login")
-        def login():
-            """Start OAuth login flow."""
-            redirect_uri = current_app.config["OAUTH_REDIRECT_URI"]
-            return self.auth_server.authorize_redirect(redirect_uri)
+        auth_bp.add_url_rule("/login", "login", self._handle_login)
+        auth_bp.add_url_rule("/callback", "callback", self._handle_callback)
+        auth_bp.add_url_rule("/logout", "logout", self._handle_logout)
+        auth_bp.add_url_rule("/refresh", "refresh", self._handle_refresh)
+        auth_bp.add_url_rule(
+            "/webhook/token-revoked",
+            "webhook_token_revoked",
+            self._handle_webhook_token_revoked,
+            methods=["POST"],
+        )
+        auth_bp.add_url_rule(
+            "/webhook/user-deleted",
+            "webhook_user_deleted",
+            self._handle_webhook_user_deleted,
+            methods=["POST"],
+        )
 
-        @auth_bp.route("/callback")
-        def callback():
-            """OAuth callback handler."""
-            try:
-                # Haal token op
-                token = self.auth_server.authorize_access_token()
-
-                # Haal userinfo op
-                userinfo = self.auth_server.userinfo()
-
-                # Sla token op in session
-                session["oauth_token"] = token
-                session["oauth_user"] = {
-                    "oauth_id": userinfo["sub"],
-                    "email": userinfo.get("email", ""),
-                    "voornaam": userinfo.get("given_name", ""),
-                    "achternaam": userinfo.get("family_name", ""),
-                }
-                session["oauth_permissions"] = userinfo.get("permissions", [])
-                session["oauth_groups"] = userinfo.get("groups", [])
-
-                # Sla 2FA status op (van token of userinfo)
-                twofa_validated = token.get("twofa_validated", False) or userinfo.get(
-                    "twofa_validated", False
-                )
-                session["twofa_validated"] = twofa_validated
-
-                logger.info(
-                    f"User {userinfo.get('email')} succesvol ingelogd (2FA: {twofa_validated})"
-                )
-
-                # Redirect naar next of home
-                next_page = session.pop("next", None) or url_for("index")
-                return redirect(next_page)
-
-            except Exception as e:
-                logger.error(f"OAuth callback error: {e}")
-                raise OAuthError(f"Login mislukt: {str(e)}")
-
-        @auth_bp.route("/logout")
-        def logout():
-            """Logout en clear session."""
-            session.clear()
-            logger.info("User uitgelogd")
-            return redirect(url_for("index"))
-
-        @auth_bp.route("/refresh")
-        def refresh():
-            """Refresh access token."""
-            if "oauth_token" not in session:
-                raise OAuthError("Geen token gevonden")
-
-            try:
-                token = session["oauth_token"]
-
-                # Refresh token
-                new_token = self.auth_server.fetch_access_token(
-                    refresh_token=token.get("refresh_token")
-                )
-
-                session["oauth_token"] = new_token
-                logger.info("Token succesvol gerefreshed")
-
-                return jsonify({"status": "success"})
-
-            except Exception as e:
-                logger.error(f"Token refresh error: {e}")
-                raise TokenExpiredError("Token refresh mislukt")
-
-        @auth_bp.route("/webhook/token-revoked", methods=["POST"])
-        def webhook_token_revoked():
-            """Webhook voor token revocation."""
-            # Verify webhook secret
-            if current_app.config["WEBHOOK_SECRET"]:
-                provided_secret = request.headers.get("X-Webhook-Secret")
-                if provided_secret != current_app.config["WEBHOOK_SECRET"]:
-                    return jsonify({"error": "Invalid secret"}), 401
-
-            data = request.get_json()
-            oauth_id = data.get("sub")
-
-            # Logout user if currently logged in
-            if current_user.is_authenticated and current_user.oauth_id == oauth_id:
-                session.clear()
-                logger.info(f"User {oauth_id} uitgelogd door token revocation")
-
-            return jsonify({"status": "success"})
-
-        @auth_bp.route("/webhook/user-deleted", methods=["POST"])
-        def webhook_user_deleted():
-            """Webhook voor user deletion."""
-            # Verify webhook secret
-            if current_app.config["WEBHOOK_SECRET"]:
-                provided_secret = request.headers.get("X-Webhook-Secret")
-                if provided_secret != current_app.config["WEBHOOK_SECRET"]:
-                    return jsonify({"error": "Invalid secret"}), 401
-
-            data = request.get_json()
-            oauth_id = data.get("sub")
-
-            # Logout user if currently logged in
-            if current_user.is_authenticated and current_user.oauth_id == oauth_id:
-                session.clear()
-                logger.info(f"User {oauth_id} uitgelogd door account deletion")
-
-            return jsonify({"status": "success"})
-
-        # Registreer blueprint
         app.register_blueprint(auth_bp)
         logger.info("Auth routes geregistreerd")
 

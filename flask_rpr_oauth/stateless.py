@@ -18,7 +18,7 @@ import requests
 logger = logging.getLogger(__name__)
 
 # Simple in-memory cache voor userinfo (voorkomt herhaalde API calls)
-_userinfo_cache = {}
+_userinfo_cache: dict[str, tuple[dict, float]] = {}
 
 
 def get_userinfo_from_token(token):
@@ -58,18 +58,18 @@ def get_userinfo_from_token(token):
     """
     # Check cache
     if token in _userinfo_cache:
-        logger.debug('Userinfo cache hit')
+        logger.debug("Userinfo cache hit")
         return _userinfo_cache[token]
 
-    oauth_base_url = current_app.config.get('OAUTH_BASE_URL')
+    oauth_base_url = current_app.config.get("OAUTH_BASE_URL")
     if not oauth_base_url:
-        logger.error('OAUTH_BASE_URL not configured')
+        logger.error("OAUTH_BASE_URL not configured")
         return None
 
     try:
         response = requests.get(
-            f'{oauth_base_url}/oauth/userinfo',
-            headers={'Authorization': f'Bearer {token}'},
+            f"{oauth_base_url}/oauth/userinfo",
+            headers={"Authorization": f"Bearer {token}"},
             timeout=10,
         )
 
@@ -83,11 +83,11 @@ def get_userinfo_from_token(token):
             )
             return userinfo
         else:
-            logger.warning(f'Userinfo request failed: {response.status_code}')
+            logger.warning(f"Userinfo request failed: {response.status_code}")
             return None
 
     except Exception as e:
-        logger.error(f'Userinfo request error: {e}')
+        logger.error(f"Userinfo request error: {e}")
         return None
 
 
@@ -95,7 +95,7 @@ def clear_userinfo_cache():
     """Clear de userinfo cache (voor testing/development)."""
     global _userinfo_cache
     _userinfo_cache = {}
-    logger.info('Userinfo cache cleared')
+    logger.info("Userinfo cache cleared")
 
 
 def token_required(f):
@@ -123,10 +123,10 @@ def token_required(f):
 
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        auth_header = request.headers.get('Authorization', '')
+        auth_header = request.headers.get("Authorization", "")
 
-        if not auth_header.startswith('Bearer '):
-            return jsonify({'error': 'Missing or invalid Authorization header'}), 401
+        if not auth_header.startswith("Bearer "):
+            return jsonify({"error": "Missing or invalid Authorization header"}), 401
 
         token = auth_header[7:]  # Remove 'Bearer '
 
@@ -134,10 +134,10 @@ def token_required(f):
         userinfo = get_userinfo_from_token(token)
 
         if not userinfo:
-            return jsonify({'error': 'Invalid or expired token'}), 401
+            return jsonify({"error": "Invalid or expired token"}), 401
 
         # Voeg userinfo toe aan kwargs
-        kwargs['userinfo'] = userinfo
+        kwargs["userinfo"] = userinfo
 
         return f(*args, **kwargs)
 
@@ -175,10 +175,10 @@ def permission_required_stateless(permission):
     def decorator(f):
         @wraps(f)
         def decorated_function(*args, **kwargs):
-            auth_header = request.headers.get('Authorization', '')
+            auth_header = request.headers.get("Authorization", "")
 
-            if not auth_header.startswith('Bearer '):
-                return jsonify({'error': 'Missing or invalid Authorization header'}), 401
+            if not auth_header.startswith("Bearer "):
+                return jsonify({"error": "Missing or invalid Authorization header"}), 401
 
             token = auth_header[7:]
 
@@ -186,33 +186,33 @@ def permission_required_stateless(permission):
             userinfo = get_userinfo_from_token(token)
 
             if not userinfo:
-                return jsonify({'error': 'Invalid or expired token'}), 401
+                return jsonify({"error": "Invalid or expired token"}), 401
 
             # Check permission (werkt voor BEIDE token types)
-            permissions = userinfo.get('permissions', [])
+            permissions = userinfo.get("permissions", [])
 
             if permission not in permissions:
-                token_type = userinfo.get('token_type', 'unknown')
-                subject = userinfo.get('sub', 'unknown')
+                token_type = userinfo.get("token_type", "unknown")
+                subject = userinfo.get("sub", "unknown")
 
                 logger.warning(
-                    f'Permission denied: {subject} ({token_type}) tried to access {permission}. '
-                    f'Available permissions: {permissions}'
+                    f"Permission denied: {subject} ({token_type}) tried to access {permission}. "
+                    f"Available permissions: {permissions}"
                 )
 
                 return (
                     jsonify(
                         {
-                            'error': 'Forbidden',
-                            'message': f'{permission} permission required',
-                            'your_permissions': permissions,
+                            "error": "Forbidden",
+                            "message": f"{permission} permission required",
+                            "your_permissions": permissions,
                         }
                     ),
                     403,
                 )
 
             # Voeg userinfo toe aan kwargs
-            kwargs['userinfo'] = userinfo
+            kwargs["userinfo"] = userinfo
 
             return f(*args, **kwargs)
 
@@ -240,38 +240,38 @@ def any_permission_required_stateless(*permissions):
     def decorator(f):
         @wraps(f)
         def decorated_function(*args, **kwargs):
-            auth_header = request.headers.get('Authorization', '')
+            auth_header = request.headers.get("Authorization", "")
 
-            if not auth_header.startswith('Bearer '):
-                return jsonify({'error': 'Missing or invalid Authorization header'}), 401
+            if not auth_header.startswith("Bearer "):
+                return jsonify({"error": "Missing or invalid Authorization header"}), 401
 
             token = auth_header[7:]
             userinfo = get_userinfo_from_token(token)
 
             if not userinfo:
-                return jsonify({'error': 'Invalid or expired token'}), 401
+                return jsonify({"error": "Invalid or expired token"}), 401
 
-            user_permissions = userinfo.get('permissions', [])
+            user_permissions = userinfo.get("permissions", [])
 
             # Check if token has ANY of the required permissions
             if not any(perm in user_permissions for perm in permissions):
                 logger.warning(
                     f'Permission denied: {userinfo.get("sub")} tried to access endpoint requiring '
-                    f'one of {permissions}. Has: {user_permissions}'
+                    f"one of {permissions}. Has: {user_permissions}"
                 )
 
                 return (
                     jsonify(
                         {
-                            'error': 'Forbidden',
-                            'message': f'One of these permissions required: {", ".join(permissions)}',
-                            'your_permissions': user_permissions,
+                            "error": "Forbidden",
+                            "message": f'One of these permissions required: {", ".join(permissions)}',
+                            "your_permissions": user_permissions,
                         }
                     ),
                     403,
                 )
 
-            kwargs['userinfo'] = userinfo
+            kwargs["userinfo"] = userinfo
             return f(*args, **kwargs)
 
         return decorated_function
@@ -298,28 +298,34 @@ def scope_required_stateless(scope):
     def decorator(f):
         @wraps(f)
         def decorated_function(*args, **kwargs):
-            auth_header = request.headers.get('Authorization', '')
+            auth_header = request.headers.get("Authorization", "")
 
-            if not auth_header.startswith('Bearer '):
-                return jsonify({'error': 'Missing or invalid Authorization header'}), 401
+            if not auth_header.startswith("Bearer "):
+                return jsonify({"error": "Missing or invalid Authorization header"}), 401
 
             token = auth_header[7:]
             userinfo = get_userinfo_from_token(token)
 
             if not userinfo:
-                return jsonify({'error': 'Invalid or expired token'}), 401
+                return jsonify({"error": "Invalid or expired token"}), 401
 
-            scopes = userinfo.get('scopes', [])
+            scopes = userinfo.get("scopes", [])
 
             if scope not in scopes:
                 logger.warning(f'Scope denied: {userinfo.get("sub")} missing scope {scope}')
 
                 return (
-                    jsonify({'error': 'Forbidden', 'message': f'{scope} scope required', 'your_scopes': scopes}),
+                    jsonify(
+                        {
+                            "error": "Forbidden",
+                            "message": f"{scope} scope required",
+                            "your_scopes": scopes,
+                        }
+                    ),
                     403,
                 )
 
-            kwargs['userinfo'] = userinfo
+            kwargs["userinfo"] = userinfo
             return f(*args, **kwargs)
 
         return decorated_function
@@ -347,42 +353,49 @@ def group_required_stateless(group):
     def decorator(f):
         @wraps(f)
         def decorated_function(*args, **kwargs):
-            auth_header = request.headers.get('Authorization', '')
+            auth_header = request.headers.get("Authorization", "")
 
-            if not auth_header.startswith('Bearer '):
-                return jsonify({'error': 'Missing or invalid Authorization header'}), 401
+            if not auth_header.startswith("Bearer "):
+                return jsonify({"error": "Missing or invalid Authorization header"}), 401
 
             token = auth_header[7:]
             userinfo = get_userinfo_from_token(token)
 
             if not userinfo:
-                return jsonify({'error': 'Invalid or expired token'}), 401
+                return jsonify({"error": "Invalid or expired token"}), 401
 
             # Check if M2M token (M2M tokens hebben geen groups)
-            if userinfo.get('token_type') == 'm2m':
+            if userinfo.get("token_type") == "m2m":
                 return (
                     jsonify(
                         {
-                            'error': 'Forbidden',
-                            'message': 'M2M tokens cannot be checked for group membership. Use permission_required_stateless instead.',
+                            "error": "Forbidden",
+                            "message": (
+                                "M2M tokens cannot be checked for group membership. "
+                                "Use permission_required_stateless instead."
+                            ),
                         }
                     ),
                     403,
                 )
 
-            groups = userinfo.get('groups', [])
+            groups = userinfo.get("groups", [])
 
             if group not in groups:
                 logger.warning(f'Group denied: {userinfo.get("sub")} not in group {group}')
 
                 return (
                     jsonify(
-                        {'error': 'Forbidden', 'message': f'{group} group membership required', 'your_groups': groups}
+                        {
+                            "error": "Forbidden",
+                            "message": f"{group} group membership required",
+                            "your_groups": groups,
+                        }
                     ),
                     403,
                 )
 
-            kwargs['userinfo'] = userinfo
+            kwargs["userinfo"] = userinfo
             return f(*args, **kwargs)
 
         return decorated_function
@@ -407,21 +420,29 @@ def user_only(f):
 
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        auth_header = request.headers.get('Authorization', '')
+        auth_header = request.headers.get("Authorization", "")
 
-        if not auth_header.startswith('Bearer '):
-            return jsonify({'error': 'Missing or invalid Authorization header'}), 401
+        if not auth_header.startswith("Bearer "):
+            return jsonify({"error": "Missing or invalid Authorization header"}), 401
 
         token = auth_header[7:]
         userinfo = get_userinfo_from_token(token)
 
         if not userinfo:
-            return jsonify({'error': 'Invalid or expired token'}), 401
+            return jsonify({"error": "Invalid or expired token"}), 401
 
-        if userinfo.get('token_type') == 'm2m':
-            return jsonify({'error': 'Forbidden', 'message': 'This endpoint requires a user token, not M2M'}), 403
+        if userinfo.get("token_type") == "m2m":
+            return (
+                jsonify(
+                    {
+                        "error": "Forbidden",
+                        "message": "This endpoint requires a user token, not M2M",
+                    }
+                ),
+                403,
+            )
 
-        kwargs['userinfo'] = userinfo
+        kwargs["userinfo"] = userinfo
         return f(*args, **kwargs)
 
     return decorated_function
@@ -444,34 +465,42 @@ def m2m_only(f):
 
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        auth_header = request.headers.get('Authorization', '')
+        auth_header = request.headers.get("Authorization", "")
 
-        if not auth_header.startswith('Bearer '):
-            return jsonify({'error': 'Missing or invalid Authorization header'}), 401
+        if not auth_header.startswith("Bearer "):
+            return jsonify({"error": "Missing or invalid Authorization header"}), 401
 
         token = auth_header[7:]
         userinfo = get_userinfo_from_token(token)
 
         if not userinfo:
-            return jsonify({'error': 'Invalid or expired token'}), 401
+            return jsonify({"error": "Invalid or expired token"}), 401
 
-        if userinfo.get('token_type') != 'm2m':
-            return jsonify({'error': 'Forbidden', 'message': 'This endpoint requires an M2M token, not user'}), 403
+        if userinfo.get("token_type") != "m2m":
+            return (
+                jsonify(
+                    {
+                        "error": "Forbidden",
+                        "message": "This endpoint requires an M2M token, not user",
+                    }
+                ),
+                403,
+            )
 
-        kwargs['userinfo'] = userinfo
+        kwargs["userinfo"] = userinfo
         return f(*args, **kwargs)
 
     return decorated_function
 
 
 __all__ = [
-    'token_required',
-    'permission_required_stateless',
-    'any_permission_required_stateless',
-    'scope_required_stateless',
-    'group_required_stateless',
-    'user_only',
-    'm2m_only',
-    'get_userinfo_from_token',
-    'clear_userinfo_cache',
+    "token_required",
+    "permission_required_stateless",
+    "any_permission_required_stateless",
+    "scope_required_stateless",
+    "group_required_stateless",
+    "user_only",
+    "m2m_only",
+    "get_userinfo_from_token",
+    "clear_userinfo_cache",
 ]
