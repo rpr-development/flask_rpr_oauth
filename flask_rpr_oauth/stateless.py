@@ -12,13 +12,14 @@ Werkt voor BEIDE:
 
 import logging
 from functools import wraps
+from typing import Dict, Tuple
 from flask import request, jsonify, current_app
 import requests
 
 logger = logging.getLogger(__name__)
 
 # Simple in-memory cache voor userinfo (voorkomt herhaalde API calls)
-_userinfo_cache: dict[str, tuple[dict, float]] = {}
+_userinfo_cache: Dict[str, Tuple[dict, float]] = {}
 
 
 def get_userinfo_from_token(token):
