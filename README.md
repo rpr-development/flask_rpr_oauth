@@ -160,6 +160,10 @@ app.config['OAUTH_AUTO_VALIDATE'] = True
 # Webhook secret voor validatie
 app.config['WEBHOOK_SECRET'] = 'your-webhook-secret'
 
+# Partitioned cookies voor iframe/CHIPS ondersteuning (default: True)
+# Aanbevolen aan te laten voor applicaties die in iframe kunnen draaien
+app.config['OAUTH_PARTITIONED_COOKIES'] = True
+
 # Session configuration (voor Redis sessions)
 app.config['SESSION_TYPE'] = 'redis'
 app.config['SESSION_REDIS'] = redis.from_url('redis://localhost:6379')
@@ -373,6 +377,111 @@ def force_2fa():
 ```
 
 **Note:** De 2FA flow gebruikt de root URL (`/`) van de auth server met `2fa_needed=true` parameter. De auth server detecteert deze parameter en start automatisch de 2FA flow voordat deze doorgaat naar de gevraagde URL.
+
+## OAuth in iFrame Context (CHIPS Support)
+
+### Het Probleem: CSRF State Mismatch in iFrames
+
+Bij het uitvoeren van een OAuth login flow in een iframe context (bijvoorbeeld FiveM NUI, embedded widgets) kan de volgende fout optreden:
+
+```text
+mismatching_state: CSRF Warning! State not equal in request and response
+```
+
+**Oorzaak:**
+
+- Moderne browsers blokkeren third-party cookies in iframes, zelfs met `SameSite=None; Secure`
+- De OAuth state parameter wordt opgeslagen in de Flask sessie cookie
+- Bij de redirect naar de OAuth server en terug naar de callback wordt de sessie cookie niet meegestuurd in iframe context
+- Hierdoor kan de state niet worden gevalideerd en faalt de OAuth flow
+
+### De Oplossing: CHIPS (Cookies Having Independent Partitioned State)
+
+De package ondersteunt het `Partitioned` cookie attribuut dat third-party cookies mogelijk maakt in iframe context met proper partitioning.
+
+**Standaard ingeschakeld vanaf v1.1.0** - De functionaliteit is automatisch actief voor alle applicaties.
+
+```python
+# Standaard: True (aanbevolen)
+app.config['OAUTH_PARTITIONED_COOKIES'] = True
+
+# Alleen uitzetten als je zeker weet dat je app NOOIT in iframe draait
+app.config['OAUTH_PARTITIONED_COOKIES'] = False
+```
+
+**Hoe het werkt:**
+
+1. Voegt het `Partitioned` attribuut toe aan sessie cookies
+2. Browsers ondersteunen dan third-party cookies in iframe context met CHIPS
+3. OAuth state validatie werkt correct omdat de sessie cookie wordt meegestuurd
+4. Cookie wordt gepartitioneerd per top-level site voor privacy
+
+**Waarom standaard aan?**
+
+- Applicaties zoals MEOS kunnen zowel in iframe (FiveM NUI) als normaal draaien
+- Geen nadelen voor normale (niet-iframe) gebruik
+- Voorkomt CSRF State Mismatch errors in iframe context
+- Vereist wel HTTPS en Secure cookies (production best practice)
+
+### Voorbeeld FiveM NUI Setup
+
+```python
+from flask import Flask
+from flask_rpr_oauth import RPRAuth
+
+app = Flask(__name__)
+
+# Basis OAuth configuratie
+app.config['SECRET_KEY'] = 'your-secret-key'
+app.config['OAUTH_BASE_URL'] = 'https://auth.roleplayreality.nl'
+app.config['OAUTH_CLIENT_ID'] = 'your-client-id'
+app.config['OAUTH_CLIENT_SECRET'] = 'your-client-secret'
+app.config['OAUTH_REDIRECT_URI'] = 'https://yourdomain.com/auth/callback'
+
+# BELANGRIJK: Enable Partitioned cookies voor iframe support
+app.config['OAUTH_PARTITIONED_COOKIES'] = True
+
+# BELANGRIJK: Configureer Flask session cookies als Secure
+# (Partitioned vereist Secure attribuut)
+app.config['SESSION_COOKIE_SECURE'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'None'
+
+auth = RPRAuth(app)
+```
+
+### Vereisten voor Partitioned Cookies
+
+1. **HTTPS vereist**: Partitioned cookies werken alleen over HTTPS
+2. **Secure attribuut**: Sessie cookies moeten het `Secure` attribuut hebben
+3. **Browser support**: Chromium 114+, Safari 16.4+, Firefox experimenteel
+
+### Browser Compatibiliteit
+
+| Browser | Versie  | Status                         |
+|---------|---------|--------------------------------|
+| Chrome  | 114+    | ✅ Ondersteund                 |
+| Edge    | 114+    | ✅ Ondersteund                 |
+| Safari  | 16.4+   | ✅ Ondersteund                 |
+| Firefox | -       | ⚠️ Experimenteel (behind flag) |
+
+### Debugging
+
+Om te verifiëren dat Partitioned cookies correct zijn ingesteld:
+
+1. Open Developer Tools → Application/Storage → Cookies
+2. Check de sessie cookie eigenschappen
+3. Verifieer dat `Partitioned` attribuut aanwezig is naast `Secure`
+
+Voorbeeld cookie header:
+
+```http
+Set-Cookie: session=...; Secure; HttpOnly; SameSite=None; Partitioned
+```
+
+### Referenties
+
+- [Google CHIPS Documentation](https://developers.google.com/privacy-sandbox/3pcd/chips)
+- [MDN: Partitioned Attribute](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Set-Cookie#partitioned)
 
 ## Redis Sessions (Aanbevolen)
 

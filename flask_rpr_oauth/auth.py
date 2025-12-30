@@ -67,6 +67,7 @@ class RPRAuth:
         app.config.setdefault("OAUTH_SCOPE", "openid profile email")
         app.config.setdefault("OAUTH_AUTO_VALIDATE", True)
         app.config.setdefault("WEBHOOK_SECRET", None)
+        app.config.setdefault("OAUTH_PARTITIONED_COOKIES", True)
 
         # Initialiseer OAuth
         self.oauth = OAuth(app)
@@ -86,6 +87,10 @@ class RPRAuth:
 
         # Registreer error handlers
         self._register_error_handlers(app)
+
+        # Registreer Partitioned cookie support voor iframe/CHIPS
+        if app.config.get("OAUTH_PARTITIONED_COOKIES", False):
+            self._register_partitioned_cookie_handler(app)
 
         # Store instance op app
         app.extensions = getattr(app, "extensions", {})
@@ -220,6 +225,42 @@ class RPRAuth:
 
         app.register_blueprint(auth_bp)
         logger.info("Auth routes geregistreerd")
+
+    def _register_partitioned_cookie_handler(self, app):
+        """
+        Registreer after_request hook voor Partitioned cookie support.
+
+        Voegt het Partitioned attribuut toe aan sessie cookies om CHIPS
+        (Cookies Having Independent Partitioned State) te ondersteunen.
+        Dit is nodig voor OAuth flows in iframe context (bijv. FiveM NUI)
+        waar third-party cookies anders geblokkeerd worden.
+
+        Args:
+            app: Flask application instance
+        """
+
+        @app.after_request
+        def add_partitioned_cookie(response):
+            """Voeg Partitioned attribuut toe aan sessie cookies."""
+            set_cookie_headers = response.headers.getlist("Set-Cookie")
+            if set_cookie_headers:
+                new_cookies = []
+                for cookie in set_cookie_headers:
+                    # Voeg Partitioned toe aan session cookie als deze Secure is
+                    # Partitioned vereist Secure om te werken
+                    if (
+                        "session" in cookie.lower()
+                        and "Partitioned" not in cookie
+                        and "Secure" in cookie
+                    ):
+                        # Voeg Partitioned toe na Secure attribuut
+                        cookie = cookie.replace("Secure", "Secure; Partitioned")
+                        logger.debug("Partitioned attribuut toegevoegd aan sessie cookie")
+                    new_cookies.append(cookie)
+                response.headers["Set-Cookie"] = new_cookies
+            return response
+
+        logger.info("Partitioned cookie handler geregistreerd (CHIPS ondersteuning)")
 
     def _register_error_handlers(self, app):
         """
