@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="flask-rpr-oauth",
-    version="1.1.1",
+    version="1.1.2",
     author="Roleplay Reality",
     author_email="support@roleplayreality.nl",
     description="Flask OAuth 2.0 / OpenID Connect extensie voor Roleplay Reality Auth Server",
