@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="flask-rpr-oauth",
-    version="1.1.4",
+    use_scm_version=True,
     author="Roleplay Reality",
     author_email="support@roleplayreality.nl",
     description="Flask OAuth 2.0 / OpenID Connect extensie voor Roleplay Reality Auth Server",
@@ -27,6 +27,7 @@ setup(
         "Framework :: Flask",
     ],
     python_requires=">=3.8",
+    setup_requires=["setuptools_scm"],
     install_requires=[
         "Flask>=2.0.0",
         "Authlib>=1.0.0",

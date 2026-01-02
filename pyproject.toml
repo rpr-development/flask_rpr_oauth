@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flask-rpr-oauth"
-version = "1.1.4"
+dynamic = ["version"]
 description = "Flask OAuth 2.0 / OpenID Connect extensie voor Roleplay Reality Auth Server"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -113,3 +113,8 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = ["requests", "authlib.*"]
 ignore_missing_imports = true
+
+[tool.setuptools_scm]
+write_to = "flask_rpr_oauth/_version.py"
+version_scheme = "python-simplified-semver"
+local_scheme = "no-local-version"
