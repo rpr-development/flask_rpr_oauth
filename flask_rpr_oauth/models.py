@@ -20,11 +20,15 @@ class OAuthUser:
         email (str): User's email address
         voornaam (str): First name
         achternaam (str): Last name
+        teamspeak_id (str): TeamSpeak identifier
+        discord_id (str): Discord identifier
+        ingame_phone (str): In-game phone number
+        fivem_role (str): FiveM role
         _permissions (list): List of permission strings
         _groups (list): List of group names
     """
 
-    def __init__(self, oauth_id, email, voornaam="", achternaam="", permissions=None, groups=None):
+    def __init__(self, oauth_id, email, voornaam="", achternaam="", teamspeak_id="", discord_id="", ingame_phone="", fivem_role="", permissions=None, groups=None):
         """
         Initialize OAuth user.
 
@@ -33,6 +37,10 @@ class OAuthUser:
             email: User's email address
             voornaam: First name (optional)
             achternaam: Last name (optional)
+            teamspeak_id: TeamSpeak identifier (optional)
+            discord_id: Discord identifier (optional)
+            ingame_phone: In-game phone number (optional)
+            fivem_role: FiveM role (optional)
             permissions: List of permissions (optional)
             groups: List of groups (optional)
         """
@@ -40,6 +48,10 @@ class OAuthUser:
         self.email = email
         self.voornaam = voornaam
         self.achternaam = achternaam
+        self.teamspeak_id = teamspeak_id
+        self.discord_id = discord_id
+        self.ingame_phone = ingame_phone
+        self.fivem_role = fivem_role
         self._permissions = permissions or []
         self._groups = groups or []
 
@@ -164,6 +176,10 @@ class _CurrentUserProxy:
             email=user_data.get("email", ""),
             voornaam=user_data.get("voornaam", ""),
             achternaam=user_data.get("achternaam", ""),
+            teamspeak_id=user_data.get("teamspeak_id", ""),
+            discord_id=user_data.get("discord_id", ""),
+            ingame_phone=user_data.get("ingame_phone", ""),
+            fivem_role=user_data.get("fivem_role", ""),
             permissions=session.get("oauth_permissions", []),
             groups=session.get("oauth_groups", []),
         )

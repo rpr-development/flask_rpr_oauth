@@ -115,6 +115,10 @@ class RPRAuth:
                 "email": userinfo.get("email", ""),
                 "voornaam": userinfo.get("given_name", ""),
                 "achternaam": userinfo.get("family_name", ""),
+                "teamspeak_id": userinfo.get("teamspeak_id", ""),
+                "discord_id": userinfo.get("discord_id", ""),
+                "ingame_phone": userinfo.get("ingame_phone", ""),
+                "fivem_role": userinfo.get("fivem_role", ""),
             }
             session["oauth_permissions"] = userinfo.get("permissions", [])
             session["oauth_groups"] = userinfo.get("groups", [])

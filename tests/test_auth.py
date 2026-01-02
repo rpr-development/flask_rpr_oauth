@@ -51,6 +51,27 @@ def test_oauth_user_creation():
     assert user.get_id() == "test-123"
 
 
+def test_oauth_user_with_profile_claims():
+    """Test OAuthUser creation with profile claims."""
+    user = OAuthUser(
+        oauth_id="test-123",
+        email="test@example.com",
+        voornaam="Test",
+        achternaam="User",
+        teamspeak_id="ts3_user_123",
+        discord_id="discord_456",
+        ingame_phone="555-1234",
+        fivem_role="admin",
+        permissions=["test.read"],
+        groups=["users"],
+    )
+
+    assert user.teamspeak_id == "ts3_user_123"
+    assert user.discord_id == "discord_456"
+    assert user.ingame_phone == "555-1234"
+    assert user.fivem_role == "admin"
+
+
 def test_user_permissions():
     """Test user permission checks."""
     user = OAuthUser(
