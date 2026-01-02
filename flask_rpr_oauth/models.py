@@ -28,7 +28,19 @@ class OAuthUser:
         _groups (list): List of group names
     """
 
-    def __init__(self, oauth_id, email, voornaam="", achternaam="", teamspeak_id="", discord_id="", ingame_phone="", fivem_role="", permissions=None, groups=None):
+    def __init__(
+        self,
+        oauth_id,
+        email,
+        voornaam="",
+        achternaam="",
+        teamspeak_id="",
+        discord_id="",
+        ingame_phone="",
+        fivem_role="",
+        permissions=None,
+        groups=None,
+    ):
         """
         Initialize OAuth user.
 
