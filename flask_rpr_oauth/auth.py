@@ -110,6 +110,8 @@ class RPRAuth:
 
             # Sla token op in session
             session["oauth_token"] = token
+
+            # Sla alle userinfo claims op, met backwards compatible mappings
             session["oauth_user"] = {
                 "oauth_id": userinfo["sub"],
                 "email": userinfo.get("email", ""),
@@ -119,6 +121,10 @@ class RPRAuth:
                 "discord_id": userinfo.get("discord_id", ""),
                 "ingame_phone": userinfo.get("ingame_phone", ""),
                 "fivem_role": userinfo.get("fivem_role", ""),
+                "name_prefix": userinfo.get("name_prefix", ""),
+                "email_verified": userinfo.get("email_verified", False),
+                "user_type": userinfo.get("user_type", ""),
+                "user_status": userinfo.get("user_status", ""),
             }
             session["oauth_permissions"] = userinfo.get("permissions", [])
             session["oauth_groups"] = userinfo.get("groups", [])

@@ -24,6 +24,11 @@ class OAuthUser:
         discord_id (str): Discord identifier
         ingame_phone (str): In-game phone number
         fivem_role (str): FiveM role
+        name_prefix (str): Name prefix
+        email_verified (bool): Email verification status
+        user_type (str): User type
+        user_status (str): User status
+        claims (dict): All raw claims from userinfo
         _permissions (list): List of permission strings
         _groups (list): List of group names
     """
@@ -38,8 +43,13 @@ class OAuthUser:
         discord_id="",
         ingame_phone="",
         fivem_role="",
+        name_prefix="",
+        email_verified=False,
+        user_type="",
+        user_status="",
         permissions=None,
         groups=None,
+        claims=None,
     ):
         """
         Initialize OAuth user.
@@ -53,8 +63,13 @@ class OAuthUser:
             discord_id: Discord identifier (optional)
             ingame_phone: In-game phone number (optional)
             fivem_role: FiveM role (optional)
+            name_prefix: Name prefix (optional)
+            email_verified: Email verification status (optional)
+            user_type: User type (optional)
+            user_status: User status (optional)
             permissions: List of permissions (optional)
             groups: List of groups (optional)
+            claims: All raw claims from userinfo (optional)
         """
         self.oauth_id = oauth_id
         self.email = email
@@ -64,8 +79,13 @@ class OAuthUser:
         self.discord_id = discord_id
         self.ingame_phone = ingame_phone
         self.fivem_role = fivem_role
+        self.name_prefix = name_prefix
+        self.email_verified = email_verified
+        self.user_type = user_type
+        self.user_status = user_status
         self._permissions = permissions or []
         self._groups = groups or []
+        self.claims = claims or {}
 
     def get_id(self):
         """Return unique identifier."""
@@ -192,8 +212,13 @@ class _CurrentUserProxy:
             discord_id=user_data.get("discord_id", ""),
             ingame_phone=user_data.get("ingame_phone", ""),
             fivem_role=user_data.get("fivem_role", ""),
+            name_prefix=user_data.get("name_prefix", ""),
+            email_verified=user_data.get("email_verified", False),
+            user_type=user_data.get("user_type", ""),
+            user_status=user_data.get("user_status", ""),
             permissions=session.get("oauth_permissions", []),
             groups=session.get("oauth_groups", []),
+            claims=user_data,
         )
 
     def __getattr__(self, name):

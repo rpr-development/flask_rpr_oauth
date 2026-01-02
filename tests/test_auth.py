@@ -62,14 +62,24 @@ def test_oauth_user_with_profile_claims():
         discord_id="discord_456",
         ingame_phone="555-1234",
         fivem_role="admin",
+        name_prefix="Dr.",
+        email_verified=True,
+        user_type="regular",
+        user_status="active",
         permissions=["test.read"],
         groups=["users"],
+        claims={"custom_claim": "custom_value"},
     )
 
     assert user.teamspeak_id == "ts3_user_123"
     assert user.discord_id == "discord_456"
     assert user.ingame_phone == "555-1234"
     assert user.fivem_role == "admin"
+    assert user.name_prefix == "Dr."
+    assert user.email_verified is True
+    assert user.user_type == "regular"
+    assert user.user_status == "active"
+    assert user.claims["custom_claim"] == "custom_value"
 
 
 def test_user_permissions():
