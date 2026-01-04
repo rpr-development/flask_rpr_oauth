@@ -21,7 +21,7 @@ python scripts/pre_deploy.py
 - ✅ Code formatting (black)
 - ✅ Unit tests (pytest)
 - ✅ Coverage report
-- ✅ Version consistency (\_\_init\_\_.py, setup.py, pyproject.toml)
+- ✅ Version info from Git tags (setuptools_scm)
 - ✅ CHANGELOG check
 - ✅ Package build test
 
@@ -76,36 +76,52 @@ pip install bandit build
 
 ### Release Workflow
 
-1. **Update version**
-   ```bash
-   # Edit version in:
-   # - flask_rpr_oauth/__init__.py
-   # - setup.py
-   ```
+**Note:** Versioning en releases zijn **volledig automatisch** via GitHub Actions met Semantic Release!
 
-2. **Run pre-deploy checks**
+#### Automatische Release (Aanbevolen)
+
+1. **Run pre-deploy checks lokaal**
    ```bash
    python scripts/pre_deploy.py
    ```
 
-3. **Update changelog**
-   ```bash
-   # Edit CHANGELOG.md
-   ```
-
-4. **Commit en tag**
+2. **Commit met conventional commit message**
    ```bash
    git add .
-   git commit -m "chore: bump version to 1.0.1"
-   git tag -a v1.0.1 -m "Release v1.0.1"
-   git push origin main --tags
+   git commit -m "feat: add new authentication method"
+   # of
+   git commit -m "fix: resolve token refresh issue"
    ```
 
-5. **Create GitHub release**
-   - Ga naar: https://github.com/rpr-development/flask_rpr_oauth/releases/new
-   - Select tag: v1.0.1
-   - Copy changelog naar release notes
-   - Publish release
+3. **Push naar main**
+   ```bash
+   git push origin main
+   ```
+
+4. **GitHub Actions doet automatisch:**
+   - ✅ Analyseert commit messages
+   - ✅ Bepaalt nieuwe versie (major/minor/patch)
+   - ✅ Maakt Git tag aan
+   - ✅ Genereert CHANGELOG.md
+   - ✅ Maakt GitHub release
+
+**Commit Message Formats:**
+- `feat: nieuwe feature` → Minor version bump (1.0.0 → 1.1.0)
+- `fix: bugfix` → Patch version bump (1.0.0 → 1.0.1)
+- `feat!: breaking change` → Major version bump (1.0.0 → 2.0.0)
+- `docs:`, `style:`, `refactor:`, `test:`, `chore:` → Geen version bump
+
+#### Handmatige Release (Fallback)
+
+Als je toch handmatig een release wilt maken:
+
+1. Run pre-deploy checks
+2. Commit changes
+3. Maak tag: `git tag -a v1.0.1 -m "Release v1.0.1"`
+4. Push: `git push origin main --tags`
+5. GitHub release aanmaken op: <https://github.com/rpr-development/flask_rpr_oauth/releases/new>
+
+**Belangrijk:** De versie wordt automatisch gegenereerd. Edit NOOIT handmatig versies in code!
 
 ## Requirements
 
