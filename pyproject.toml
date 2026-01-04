@@ -123,7 +123,7 @@ local_scheme = "no-local-version"
 # Don't manage version in files - setuptools_scm does that from git tags
 version_toml = []
 version_variables = []
-build_command = "python -m build"
+build_command = ""  # Don't build here - separate build job handles this
 upload_to_pypi = false
 upload_to_release = true
 branch = "main"
