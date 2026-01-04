@@ -13,13 +13,16 @@ from .models import OAuthUser, current_user
 from .exceptions import OAuthError, TokenExpiredError
 
 try:
-    from flask_wtf.csrf import CSRFProtect, csrf_exempt
+    from flask_wtf.csrf import csrf_exempt
+
     CSRF_AVAILABLE = True
 except ImportError:
     CSRF_AVAILABLE = False
+
     # Dummy decorator als flask-wtf niet beschikbaar is
     def csrf_exempt(func):
         return func
+
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +87,9 @@ class RPRAuth:
             "auth_server",
             client_id=app.config["OAUTH_CLIENT_ID"],
             client_secret=app.config["OAUTH_CLIENT_SECRET"],
-            server_metadata_url=f"{app.config['OAUTH_BASE_URL']}/.well-known/openid-configuration",
+            server_metadata_url=(
+                f"{app.config['OAUTH_BASE_URL']}/.well-known/openid-configuration"
+            ),
             client_kwargs={"scope": app.config["OAUTH_SCOPE"]},
         )
 
