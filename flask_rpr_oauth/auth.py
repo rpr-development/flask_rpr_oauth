@@ -12,6 +12,15 @@ from authlib.integrations.flask_client import OAuth
 from .models import OAuthUser, current_user
 from .exceptions import OAuthError, TokenExpiredError
 
+try:
+    from flask_wtf.csrf import CSRFProtect, csrf_exempt
+    CSRF_AVAILABLE = True
+except ImportError:
+    CSRF_AVAILABLE = False
+    # Dummy decorator als flask-wtf niet beschikbaar is
+    def csrf_exempt(func):
+        return func
+
 logger = logging.getLogger(__name__)
 
 
@@ -101,6 +110,7 @@ class RPRAuth:
         redirect_uri = current_app.config["OAUTH_REDIRECT_URI"]
         return self.auth_server.authorize_redirect(redirect_uri)
 
+    @csrf_exempt
     def _handle_callback(self):
         """OAuth callback handler."""
         try:
