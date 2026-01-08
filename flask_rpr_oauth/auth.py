@@ -120,8 +120,7 @@ class RPRAuth:
         # Add acr_values parameter if 2FA is required (OAuth standard)
         if require_2fa:
             return self.auth_server.authorize_redirect(
-                redirect_uri,
-                acr_values="mfa"  # Request multi-factor authentication
+                redirect_uri, acr_values="mfa"  # Request multi-factor authentication
             )
 
         return self.auth_server.authorize_redirect(redirect_uri)
@@ -169,7 +168,9 @@ class RPRAuth:
             session["twofa_validated"] = twofa_validated
             session["acr"] = acr
 
-            logger.info(f"User {userinfo.get('email')} succesvol ingelogd (2FA: {twofa_validated}, ACR: {acr})")
+            logger.info(
+                f"User {userinfo.get('email')} succesvol ingelogd (2FA: {twofa_validated}, ACR: {acr})"
+            )
 
             # Redirect naar next of home
             next_page = session.pop("next", None) or url_for("index")
@@ -430,7 +431,7 @@ class RPRAuth:
         return self.auth_server.authorize_redirect(
             redirect_uri,
             acr_values="mfa",  # Request multi-factor authentication
-            prompt="login"     # Force re-authentication
+            prompt="login",  # Force re-authentication
         )
 
 

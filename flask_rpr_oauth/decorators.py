@@ -56,15 +56,11 @@ def permission_required(permission):
                 abort(401)
 
             if not hasattr(current_user, "has_permission"):
-                logger.error(
-                    f"User {current_user.get_id()} heeft geen has_permission method"
-                )
+                logger.error(f"User {current_user.get_id()} heeft geen has_permission method")
                 abort(403)
 
             if not current_user.has_permission(permission):
-                logger.warning(
-                    f"User {current_user.get_id()} heeft geen permission: {permission}"
-                )
+                logger.warning(f"User {current_user.get_id()} heeft geen permission: {permission}")
                 raise PermissionDeniedError(permission=permission)
 
             return f(*args, **kwargs)
@@ -96,9 +92,7 @@ def any_permission_required(*permissions):
                 abort(401)
 
             if not hasattr(current_user, "has_any_permission"):
-                logger.error(
-                    f"User {current_user.get_id()} heeft geen has_any_permission method"
-                )
+                logger.error(f"User {current_user.get_id()} heeft geen has_any_permission method")
                 abort(403)
 
             if not current_user.has_any_permission(*permissions):
@@ -142,9 +136,7 @@ def group_required(group):
                 abort(403)
 
             if not current_user.in_group(group):
-                logger.warning(
-                    f"User {current_user.get_id()} zit niet in groep: {group}"
-                )
+                logger.warning(f"User {current_user.get_id()} zit niet in groep: {group}")
                 raise GroupDeniedError(group=group)
 
             return f(*args, **kwargs)
@@ -176,9 +168,7 @@ def any_group_required(*groups):
                 abort(401)
 
             if not hasattr(current_user, "in_any_group"):
-                logger.error(
-                    f"User {current_user.get_id()} heeft geen in_any_group method"
-                )
+                logger.error(f"User {current_user.get_id()} heeft geen in_any_group method")
                 abort(403)
 
             if not current_user.in_any_group(*groups):
