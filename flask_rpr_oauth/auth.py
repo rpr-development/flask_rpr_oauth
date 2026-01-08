@@ -113,6 +113,17 @@ class RPRAuth:
     def _handle_login(self):
         """Start OAuth login flow."""
         redirect_uri = current_app.config["OAUTH_REDIRECT_URI"]
+
+        # Check if 2FA is required for this app
+        require_2fa = current_app.config.get("OAUTH_REQUIRE_2FA", False)
+
+        # Add acr_values parameter if 2FA is required (OAuth standard)
+        if require_2fa:
+            return self.auth_server.authorize_redirect(
+                redirect_uri,
+                acr_values="mfa"  # Request multi-factor authentication
+            )
+
         return self.auth_server.authorize_redirect(redirect_uri)
 
     @csrf_exempt
@@ -144,13 +155,21 @@ class RPRAuth:
             session["oauth_permissions"] = userinfo.get("permissions", [])
             session["oauth_groups"] = userinfo.get("groups", [])
 
-            # Sla 2FA status op
+            # Sla 2FA status op (check both legacy twofa_validated and new acr claim)
             twofa_validated = token.get("twofa_validated", False) or userinfo.get(
                 "twofa_validated", False
             )
-            session["twofa_validated"] = twofa_validated
 
-            logger.info(f"User {userinfo.get('email')} succesvol ingelogd (2FA: {twofa_validated})")
+            # Check ACR (Authentication Context Class Reference) claim from ID token
+            # This is the OAuth standard way to check authentication level
+            acr = userinfo.get("acr", "pwd")
+            if acr in ["mfa", "phr"]:
+                twofa_validated = True
+
+            session["twofa_validated"] = twofa_validated
+            session["acr"] = acr
+
+            logger.info(f"User {userinfo.get('email')} succesvol ingelogd (2FA: {twofa_validated}, ACR: {acr})")
 
             # Redirect naar next of home
             next_page = session.pop("next", None) or url_for("index")
@@ -340,12 +359,21 @@ class RPRAuth:
         """
         Valideer 2FA status van huidige user.
 
-        Checkt via de validate endpoint of de user 2FA heeft voltooid.
-        Update de session met de actuele 2FA status.
+        Checkt de ACR claim en twofa_validated status uit de session
+        en userinfo endpoint.
 
         Returns:
             bool: True als 2FA is gevalideerd
         """
+        # Check session first (fastest)
+        acr = session.get("acr", "pwd")
+        if acr in ["mfa", "phr"]:
+            return True
+
+        if session.get("twofa_validated", False):
+            return True
+
+        # If not in session, check with server
         if "oauth_token" not in session:
             return False
 
@@ -356,19 +384,27 @@ class RPRAuth:
             return False
 
         try:
-            # Check 2FA status via validate endpoint
+            # Get userinfo to check current 2FA status
             response = requests.get(
-                f"{current_app.config['OAUTH_BASE_URL']}/api/v1/validate",
+                f"{current_app.config['OAUTH_BASE_URL']}/oauth/userinfo",
                 headers={"Authorization": f"Bearer {access_token}"},
                 timeout=10,
             )
 
             if response.status_code == 200:
                 data = response.json()
-                twofa_validated = data.get("twofaValidated", False)
 
-                # Update session met actuele status
+                # Check ACR claim (OAuth standard)
+                acr = data.get("acr", "pwd")
+                if acr in ["mfa", "phr"]:
+                    session["acr"] = acr
+                    session["twofa_validated"] = True
+                    return True
+
+                # Check legacy twofa_validated field
+                twofa_validated = data.get("twofa_validated", False)
                 session["twofa_validated"] = twofa_validated
+                session["acr"] = acr
 
                 return twofa_validated
 
@@ -378,21 +414,24 @@ class RPRAuth:
             logger.error(f"2FA validation error: {e}")
             return False
 
-    def get_2fa_redirect_url(self, next_url=None):
+    def require_2fa_reauth(self):
         """
-        Genereer redirect URL naar auth server voor 2FA.
+        Forceer opnieuw authenticatie met 2FA via OAuth.
 
-        Args:
-            next_url: URL om naar terug te keren na 2FA (optioneel)
+        Deze methode start een nieuwe OAuth flow met acr_values=mfa om
+        de gebruiker te dwingen opnieuw in te loggen met 2FA.
 
         Returns:
-            str: Volledige URL naar auth server met 2FA requirement
+            Flask redirect response naar OAuth authorize endpoint
         """
-        if next_url is None:
-            next_url = request.url
+        redirect_uri = current_app.config["OAUTH_REDIRECT_URI"]
 
-        auth_base = current_app.config["OAUTH_BASE_URL"]
-        return f"{auth_base}/?2fa_needed=true&next={next_url}"
+        # Start nieuwe OAuth flow met 2FA requirement
+        return self.auth_server.authorize_redirect(
+            redirect_uri,
+            acr_values="mfa",  # Request multi-factor authentication
+            prompt="login"     # Force re-authentication
+        )
 
 
 __all__ = ["RPRAuth"]

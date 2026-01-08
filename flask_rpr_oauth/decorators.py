@@ -5,10 +5,14 @@ flask_rpr_oauth.decorators
 Decorators voor permission en group checks.
 """
 
+import logging
 from functools import wraps
 from flask import abort, current_app, session, redirect, url_for, request
 from .models import current_user
 from .exceptions import PermissionDeniedError, GroupDeniedError
+
+
+logger = logging.getLogger(__name__)
 
 
 def login_required(f):
@@ -52,13 +56,13 @@ def permission_required(permission):
                 abort(401)
 
             if not hasattr(current_user, "has_permission"):
-                current_app.logger.error(
+                logger.error(
                     f"User {current_user.get_id()} heeft geen has_permission method"
                 )
                 abort(403)
 
             if not current_user.has_permission(permission):
-                current_app.logger.warning(
+                logger.warning(
                     f"User {current_user.get_id()} heeft geen permission: {permission}"
                 )
                 raise PermissionDeniedError(permission=permission)
@@ -92,13 +96,13 @@ def any_permission_required(*permissions):
                 abort(401)
 
             if not hasattr(current_user, "has_any_permission"):
-                current_app.logger.error(
+                logger.error(
                     f"User {current_user.get_id()} heeft geen has_any_permission method"
                 )
                 abort(403)
 
             if not current_user.has_any_permission(*permissions):
-                current_app.logger.warning(
+                logger.warning(
                     f"User {current_user.get_id()} heeft geen van de permissions: {permissions}"
                 )
                 raise PermissionDeniedError(
@@ -134,11 +138,11 @@ def group_required(group):
                 abort(401)
 
             if not hasattr(current_user, "in_group"):
-                current_app.logger.error(f"User {current_user.get_id()} heeft geen in_group method")
+                logger.error(f"User {current_user.get_id()} heeft geen in_group method")
                 abort(403)
 
             if not current_user.in_group(group):
-                current_app.logger.warning(
+                logger.warning(
                     f"User {current_user.get_id()} zit niet in groep: {group}"
                 )
                 raise GroupDeniedError(group=group)
@@ -172,13 +176,13 @@ def any_group_required(*groups):
                 abort(401)
 
             if not hasattr(current_user, "in_any_group"):
-                current_app.logger.error(
+                logger.error(
                     f"User {current_user.get_id()} heeft geen in_any_group method"
                 )
                 abort(403)
 
             if not current_user.in_any_group(*groups):
-                current_app.logger.warning(
+                logger.warning(
                     f"User {current_user.get_id()} zit niet in een van de groepen: {groups}"
                 )
                 raise GroupDeniedError(
@@ -197,13 +201,18 @@ def require_2fa(f):
     Decorator die vereist dat gebruiker 2FA heeft voltooid.
 
     Als de gebruiker niet is ingelogd, redirect naar login.
-    Als de gebruiker geen 2FA heeft voltooid, redirect naar auth server voor 2FA.
+    Als de gebruiker geen 2FA heeft voltooid, start een nieuwe OAuth flow met acr_values=mfa.
 
     Example:
-        @app.route('/sensitive')
+        @app.route('/admin/dashboard')
         @require_2fa
-        def sensitive_endpoint():
-            return 'Highly sensitive data'
+        def admin_dashboard():
+            return 'Admin Dashboard - 2FA required'
+
+    Note:
+        Deze decorator checkt eerst de session (snel), en valideert daarna
+        met de auth server indien nodig. Als 2FA ontbreekt, wordt de gebruiker
+        doorgestuurd naar een nieuwe OAuth flow met 2FA requirement.
     """
 
     @wraps(f)
@@ -213,25 +222,23 @@ def require_2fa(f):
             session["next"] = request.url
             return redirect(url_for("auth.login"))
 
-        # Check 2FA status in session
-        twofa_validated = session.get("twofa_validated", False)
+        # Haal RPRAuth instance op
+        rpr_auth = current_app.extensions.get("rpr_auth")
+        if not rpr_auth:
+            logger.error("RPRAuth niet gevonden in extensions")
+            abort(500)
 
-        if not twofa_validated:
-            # Haal RPRAuth instance op
-            rpr_auth = current_app.extensions.get("rpr_auth")
+        # Valideer 2FA status (checkt session + server indien nodig)
+        if not rpr_auth.validate_2fa():
+            logger.warning(
+                f"User {current_user.get_id()} heeft geen 2FA validatie voor {request.path}"
+            )
 
-            if rpr_auth:
-                # Valideer actuele 2FA status bij auth server
-                if not rpr_auth.validate_2fa():
-                    current_app.logger.warning(
-                        f"User {current_user.get_id()} heeft geen 2FA validatie"
-                    )
-                    # Redirect naar auth server voor 2FA
-                    redirect_url = rpr_auth.get_2fa_redirect_url(request.url)
-                    return redirect(redirect_url)
-            else:
-                current_app.logger.error("RPRAuth niet gevonden in extensions")
-                abort(500)
+            # Sla de huidige URL op in session voor redirect na 2FA
+            session["next"] = request.url
+
+            # Start nieuwe OAuth flow met 2FA requirement (acr_values=mfa)
+            return rpr_auth.require_2fa_reauth()
 
         return f(*args, **kwargs)
 
