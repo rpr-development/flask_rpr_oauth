@@ -188,10 +188,11 @@ def force_2fa():
     # Haal RPRAuth instance op
     rpr_auth = app.extensions["rpr_auth"]
 
-    # Genereer 2FA redirect URL
-    redirect_url = rpr_auth.get_2fa_redirect_url(next_url="http://localhost:5000/")
+    # Sla de next URL op in session voor redirect na 2FA
+    session["next"] = "http://localhost:5000/"
 
-    return redirect(redirect_url)
+    # Start nieuwe OAuth flow met 2FA requirement
+    return rpr_auth.require_2fa_reauth()
 
 
 @app.route("/check-2fa")

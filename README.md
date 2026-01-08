@@ -371,12 +371,11 @@ def check_2fa():
 @app.route('/force-2fa')
 def force_2fa():
     rpr_auth = current_app.extensions['rpr_auth']
-    # Genereert: https://auth.roleplayreality.nl/?2fa_needed=true&next=/dashboard
-    redirect_url = rpr_auth.get_2fa_redirect_url(next_url='/dashboard')
-    return redirect(redirect_url)
+    # Start nieuwe OAuth flow met 2FA requirement
+    return rpr_auth.require_2fa_reauth()
 ```
 
-**Note:** De 2FA flow gebruikt de root URL (`/`) van de auth server met `2fa_needed=true` parameter. De auth server detecteert deze parameter en start automatisch de 2FA flow voordat deze doorgaat naar de gevraagde URL.
+**Note:** De `require_2fa_reauth()` methode start een nieuwe OAuth flow met `acr_values=mfa` en `prompt=login`, wat de gebruiker dwingt om opnieuw in te loggen met 2FA.
 
 ## OAuth in iFrame Context (CHIPS Support)
 
@@ -642,7 +641,7 @@ rpr_auth = app.extensions['rpr_auth']
 
 rpr_auth.validate_token()                    # Valideer access token
 rpr_auth.validate_2fa()                      # Valideer 2FA status
-rpr_auth.get_2fa_redirect_url(next_url)      # Genereer 2FA redirect URL
+rpr_auth.require_2fa_reauth()                # Start nieuwe OAuth flow met 2FA requirement
 ```
 
 ## Development

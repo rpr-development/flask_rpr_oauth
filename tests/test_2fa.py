@@ -200,21 +200,6 @@ def test_validate_2fa_failure(mock_get, app, auth_session):
         assert session.get("twofa_validated") is False
 
 
-def test_get_2fa_redirect_url(app):
-    """Test get_2fa_redirect_url methode."""
-    with app.app_context():
-        with app.test_request_context("/test"):
-            rpr_auth = app.extensions["rpr_auth"]
-
-            # Test met custom next URL
-            url = rpr_auth.get_2fa_redirect_url("http://localhost/dashboard")
-            assert url == "https://auth.test.nl/?2fa_needed=true&next=http://localhost/dashboard"
-
-            # Test met automatische next URL (huidige request URL)
-            url = rpr_auth.get_2fa_redirect_url()
-            assert url == "https://auth.test.nl/?2fa_needed=true&next=http://localhost/test"
-
-
 @pytest.mark.skip(reason="Complex mocking - needs refactor")
 def test_callback_saves_2fa_status(app, client):
     """Test of OAuth callback de 2FA status opslaat."""
