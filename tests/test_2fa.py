@@ -128,14 +128,20 @@ def test_require_2fa_decorator_without_auth(client):
 def test_require_2fa_decorator_without_2fa(auth_session):
     """Test @require_2fa met auth maar zonder 2FA."""
     with patch("flask_rpr_oauth.auth.RPRAuth.validate_2fa") as mock_validate:
-        mock_validate.return_value = False
+        with patch("flask_rpr_oauth.auth.RPRAuth.require_2fa_reauth") as mock_reauth:
+            from flask import redirect
 
-        response = auth_session.get("/sensitive", follow_redirects=False)
+            mock_validate.return_value = False
+            # Mock de OAuth redirect
+            mock_reauth.return_value = redirect("https://auth.test.nl/oauth/authorize?acr_values=mfa")
 
-        # Moet redirecten naar 2FA
-        assert response.status_code == 302
-        assert "2fa_needed=true" in response.location
-        mock_validate.assert_called_once()
+            response = auth_session.get("/sensitive", follow_redirects=False)
+
+            # Moet redirecten naar OAuth met 2FA
+            assert response.status_code == 302
+            assert "acr_values=mfa" in response.location
+            mock_validate.assert_called_once()
+            mock_reauth.assert_called_once()
 
 
 def test_require_2fa_decorator_with_2fa(auth_session_with_2fa):
@@ -152,10 +158,15 @@ def test_require_2fa_decorator_with_2fa(auth_session_with_2fa):
 @patch("flask_rpr_oauth.auth.requests.get")
 def test_validate_2fa_success(mock_get, app, auth_session):
     """Test validate_2fa met succesvolle validatie."""
-    # Mock response
+    # Mock response - userinfo endpoint moet acr of twofa_validated returnen
     mock_response = Mock()
     mock_response.status_code = 200
-    mock_response.json.return_value = {"isValid": True, "twofaValidated": True}
+    mock_response.json.return_value = {
+        "sub": "test-123",
+        "email": "test@example.com",
+        "acr": "mfa",  # OAuth standaard voor 2FA
+        "twofa_validated": True,
+    }
     mock_get.return_value = mock_response
 
     with app.test_request_context():
