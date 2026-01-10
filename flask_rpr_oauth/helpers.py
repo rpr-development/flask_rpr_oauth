@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 # Simple in-memory cache voor userinfo (voorkomt herhaalde API calls)
 _userinfo_cache: Dict[str, Tuple[dict, float]] = {}
 
+
 def get_userinfo_from_token(token):
     """
     Haal userinfo op via het /oauth/userinfo endpoint.
@@ -63,11 +64,13 @@ def get_userinfo_from_token(token):
         logger.error(f"Userinfo request error: {e}")
         return None
 
+
 def clear_userinfo_cache():
     """Leeg de userinfo cache (voor testing/development)."""
     global _userinfo_cache
     _userinfo_cache = {}
     logger.info("Userinfo cache cleared")
+
 
 __all__ = [
     "get_userinfo_from_token",

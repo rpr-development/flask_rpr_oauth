@@ -33,6 +33,7 @@ def _get_bearer_token():
 def _get_userinfo_from_token(token):
     """Get userinfo from Bearer token via OAuth server."""
     from .helpers import get_userinfo_from_token
+
     return get_userinfo_from_token(token)
 
 
@@ -120,11 +121,16 @@ def permission_required(permission):
                         f"Available permissions: {permissions}"
                     )
 
-                    return jsonify({
-                        "error": "Forbidden",
-                        "message": f"{permission} permission required",
-                        "your_permissions": permissions,
-                    }), 403
+                    return (
+                        jsonify(
+                            {
+                                "error": "Forbidden",
+                                "message": f"{permission} permission required",
+                                "your_permissions": permissions,
+                            }
+                        ),
+                        403,
+                    )
 
                 # Inject userinfo for API calls
                 kwargs["userinfo"] = userinfo
@@ -184,11 +190,16 @@ def any_permission_required(*permissions):
                         f"one of {permissions}. Has: {user_permissions}"
                     )
 
-                    return jsonify({
-                        "error": "Forbidden",
-                        "message": f'One of these permissions required: {", ".join(permissions)}',
-                        "your_permissions": user_permissions,
-                    }), 403
+                    return (
+                        jsonify(
+                            {
+                                "error": "Forbidden",
+                                "message": f'One of these permissions required: {", ".join(permissions)}',
+                                "your_permissions": user_permissions,
+                            }
+                        ),
+                        403,
+                    )
 
                 kwargs["userinfo"] = userinfo
                 return f(*args, **kwargs)
@@ -246,24 +257,34 @@ def group_required(group):
 
                 # Check if M2M token (M2M tokens hebben geen groups)
                 if userinfo.get("token_type") == "m2m":
-                    return jsonify({
-                        "error": "Forbidden",
-                        "message": (
-                            "M2M tokens cannot be checked for group membership. "
-                            "Use permission_required instead."
+                    return (
+                        jsonify(
+                            {
+                                "error": "Forbidden",
+                                "message": (
+                                    "M2M tokens cannot be checked for group membership. "
+                                    "Use permission_required instead."
+                                ),
+                            }
                         ),
-                    }), 403
+                        403,
+                    )
 
                 groups = userinfo.get("groups", [])
 
                 if group not in groups:
                     logger.warning(f'Group denied: {userinfo.get("sub")} not in group {group}')
 
-                    return jsonify({
-                        "error": "Forbidden",
-                        "message": f"{group} group membership required",
-                        "your_groups": groups,
-                    }), 403
+                    return (
+                        jsonify(
+                            {
+                                "error": "Forbidden",
+                                "message": f"{group} group membership required",
+                                "your_groups": groups,
+                            }
+                        ),
+                        403,
+                    )
 
                 kwargs["userinfo"] = userinfo
                 return f(*args, **kwargs)
@@ -317,13 +338,18 @@ def any_group_required(*groups):
 
                 # Check if M2M token
                 if userinfo.get("token_type") == "m2m":
-                    return jsonify({
-                        "error": "Forbidden",
-                        "message": (
-                            "M2M tokens cannot be checked for group membership. "
-                            "Use any_permission_required instead."
+                    return (
+                        jsonify(
+                            {
+                                "error": "Forbidden",
+                                "message": (
+                                    "M2M tokens cannot be checked for group membership. "
+                                    "Use any_permission_required instead."
+                                ),
+                            }
                         ),
-                    }), 403
+                        403,
+                    )
 
                 user_groups = userinfo.get("groups", [])
 
@@ -332,11 +358,16 @@ def any_group_required(*groups):
                         f'Group denied: {userinfo.get("sub")} not in any of groups {groups}'
                     )
 
-                    return jsonify({
-                        "error": "Forbidden",
-                        "message": f'Membership in one of these groups required: {", ".join(groups)}',
-                        "your_groups": user_groups,
-                    }), 403
+                    return (
+                        jsonify(
+                            {
+                                "error": "Forbidden",
+                                "message": f'Membership in one of these groups required: {", ".join(groups)}',
+                                "your_groups": user_groups,
+                            }
+                        ),
+                        403,
+                    )
 
                 kwargs["userinfo"] = userinfo
                 return f(*args, **kwargs)
@@ -413,13 +444,13 @@ def require_2fa(f):
     return decorated_function
 
 
-
 # Extra decorators for explicit user/m2m enforcement
 def user_only(f):
     """
     Decorator: alleen user tokens toegestaan (API) of session user.
     API: blokkeert M2M tokens. Session: altijd toegestaan.
     """
+
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if _is_bearer_token_request():
@@ -428,20 +459,28 @@ def user_only(f):
             if not userinfo:
                 return jsonify({"error": "Invalid or expired token"}), 401
             if userinfo.get("token_type") == "m2m":
-                return jsonify({
-                    "error": "Forbidden",
-                    "message": "This endpoint requires a user token, not M2M",
-                }), 403
+                return (
+                    jsonify(
+                        {
+                            "error": "Forbidden",
+                            "message": "This endpoint requires a user token, not M2M",
+                        }
+                    ),
+                    403,
+                )
             kwargs["userinfo"] = userinfo
             return f(*args, **kwargs)
         # Session: altijd toegestaan
         return f(*args, **kwargs)
+
     return decorated_function
+
 
 def m2m_only(f):
     """
     Decorator: alleen M2M tokens toegestaan (API). Session users geblokkeerd.
     """
+
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if _is_bearer_token_request():
@@ -450,15 +489,22 @@ def m2m_only(f):
             if not userinfo:
                 return jsonify({"error": "Invalid or expired token"}), 401
             if userinfo.get("token_type") != "m2m":
-                return jsonify({
-                    "error": "Forbidden",
-                    "message": "This endpoint requires an M2M token, not user",
-                }), 403
+                return (
+                    jsonify(
+                        {
+                            "error": "Forbidden",
+                            "message": "This endpoint requires an M2M token, not user",
+                        }
+                    ),
+                    403,
+                )
             kwargs["userinfo"] = userinfo
             return f(*args, **kwargs)
         # Session: nooit toegestaan
         return jsonify({"error": "Forbidden", "message": "Session users not allowed"}), 403
+
     return decorated_function
+
 
 __all__ = [
     "login_required",
