@@ -2,12 +2,13 @@
 flask_rpr_oauth.decorators
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Decorators voor permission en group checks.
+Unified decorators that work for BOTH session-based (browser) and stateless (API) authentication.
+Automatically detects Bearer tokens and falls back to session-based auth.
 """
 
 import logging
 from functools import wraps
-from flask import abort, current_app, session, redirect, url_for, request
+from flask import abort, current_app, session, redirect, url_for, request, jsonify
 from .models import current_user
 from .exceptions import PermissionDeniedError, GroupDeniedError
 
@@ -15,20 +16,65 @@ from .exceptions import PermissionDeniedError, GroupDeniedError
 logger = logging.getLogger(__name__)
 
 
+def _is_bearer_token_request():
+    """Check if request uses Bearer token authentication (API mode)."""
+    auth_header = request.headers.get("Authorization", "")
+    return auth_header.startswith("Bearer ")
+
+
+def _get_bearer_token():
+    """Extract Bearer token from Authorization header."""
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        return auth_header[7:]  # Remove 'Bearer '
+    return None
+
+
+def _get_userinfo_from_token(token):
+    """Get userinfo from Bearer token via OAuth server."""
+    from .helpers import get_userinfo_from_token
+    return get_userinfo_from_token(token)
+
+
 def login_required(f):
     """
-    Decorator die vereist dat gebruiker is ingelogd.
+    Unified decorator that requires authentication via Bearer token OR session.
 
-    Checkt of user in session zit en redirect naar login indien niet.
+    - Bearer token (API): Validates token and injects 'userinfo' kwarg
+    - Session (browser): Checks current_user and redirects to login if needed
+
+    Usage:
+        @login_required
+        def my_endpoint(userinfo=None):
+            # For API calls: userinfo contains token data
+            # For browser: userinfo is None, use current_user instead
+            if userinfo:
+                user_id = userinfo['sub']  # API mode
+            else:
+                user_id = current_user.get_id()  # Browser mode
     """
 
     @wraps(f)
     def decorated_function(*args, **kwargs):
+        # Check for Bearer token (API mode)
+        if _is_bearer_token_request():
+            token = _get_bearer_token()
+            userinfo = _get_userinfo_from_token(token)
+
+            if not userinfo:
+                return jsonify({"error": "Invalid or expired token"}), 401
+
+            # Inject userinfo for API calls
+            kwargs["userinfo"] = userinfo
+            return f(*args, **kwargs)
+
+        # Session-based (browser mode)
         if not current_user.is_authenticated:
             # Store next URL in session
             session["next"] = request.url
             # Redirect to login
             return redirect(url_for("auth.login"))
+
         return f(*args, **kwargs)
 
     return decorated_function
@@ -36,22 +82,55 @@ def login_required(f):
 
 def permission_required(permission):
     """
-    Decorator die vereist dat gebruiker een specifieke permission heeft.
+    Unified decorator that requires a specific permission via Bearer token OR session.
+
+    Works for BOTH user tokens AND M2M tokens in API mode.
 
     Args:
         permission (str): Required permission string
 
     Example:
         @app.route('/admin')
-        @login_required
         @permission_required('admin.access')
-        def admin_panel():
+        def admin_panel(userinfo=None):
+            # Works for both API and browser requests
             return 'Admin panel'
     """
 
     def decorator(f):
         @wraps(f)
         def decorated_function(*args, **kwargs):
+            # Check for Bearer token (API mode)
+            if _is_bearer_token_request():
+                token = _get_bearer_token()
+                userinfo = _get_userinfo_from_token(token)
+
+                if not userinfo:
+                    return jsonify({"error": "Invalid or expired token"}), 401
+
+                # Check permission for API token
+                permissions = userinfo.get("permissions", [])
+
+                if permission not in permissions:
+                    token_type = userinfo.get("token_type", "unknown")
+                    subject = userinfo.get("sub", "unknown")
+
+                    logger.warning(
+                        f"Permission denied: {subject} ({token_type}) tried to access {permission}. "
+                        f"Available permissions: {permissions}"
+                    )
+
+                    return jsonify({
+                        "error": "Forbidden",
+                        "message": f"{permission} permission required",
+                        "your_permissions": permissions,
+                    }), 403
+
+                # Inject userinfo for API calls
+                kwargs["userinfo"] = userinfo
+                return f(*args, **kwargs)
+
+            # Session-based (browser mode)
             if not current_user.is_authenticated:
                 abort(401)
 
@@ -72,22 +151,49 @@ def permission_required(permission):
 
 def any_permission_required(*permissions):
     """
-    Decorator die vereist dat gebruiker één van de opgegeven permissions heeft.
+    Unified decorator that requires ANY of the specified permissions via Bearer token OR session.
 
     Args:
         *permissions: Variable aantal permission strings
 
     Example:
         @app.route('/moderate')
-        @login_required
         @any_permission_required('moderator', 'admin')
-        def moderate():
+        def moderate(userinfo=None):
+            # Works for both API and browser requests
             return 'Moderation panel'
     """
 
     def decorator(f):
         @wraps(f)
         def decorated_function(*args, **kwargs):
+            # Check for Bearer token (API mode)
+            if _is_bearer_token_request():
+                token = _get_bearer_token()
+                userinfo = _get_userinfo_from_token(token)
+
+                if not userinfo:
+                    return jsonify({"error": "Invalid or expired token"}), 401
+
+                user_permissions = userinfo.get("permissions", [])
+
+                # Check if token has ANY of the required permissions
+                if not any(perm in user_permissions for perm in permissions):
+                    logger.warning(
+                        f'Permission denied: {userinfo.get("sub")} tried to access endpoint requiring '
+                        f"one of {permissions}. Has: {user_permissions}"
+                    )
+
+                    return jsonify({
+                        "error": "Forbidden",
+                        "message": f'One of these permissions required: {", ".join(permissions)}',
+                        "your_permissions": user_permissions,
+                    }), 403
+
+                kwargs["userinfo"] = userinfo
+                return f(*args, **kwargs)
+
+            # Session-based (browser mode)
             if not current_user.is_authenticated:
                 abort(401)
 
@@ -112,22 +218,57 @@ def any_permission_required(*permissions):
 
 def group_required(group):
     """
-    Decorator die vereist dat gebruiker in een specifieke groep zit.
+    Unified decorator that requires group membership via Bearer token OR session.
+
+    NOTE: Only works for user tokens (not M2M tokens).
 
     Args:
         group (str): Required group name
 
     Example:
         @app.route('/staff')
-        @login_required
         @group_required('staff')
-        def staff_panel():
+        def staff_panel(userinfo=None):
+            # Works for both API and browser requests
             return 'Staff panel'
     """
 
     def decorator(f):
         @wraps(f)
         def decorated_function(*args, **kwargs):
+            # Check for Bearer token (API mode)
+            if _is_bearer_token_request():
+                token = _get_bearer_token()
+                userinfo = _get_userinfo_from_token(token)
+
+                if not userinfo:
+                    return jsonify({"error": "Invalid or expired token"}), 401
+
+                # Check if M2M token (M2M tokens hebben geen groups)
+                if userinfo.get("token_type") == "m2m":
+                    return jsonify({
+                        "error": "Forbidden",
+                        "message": (
+                            "M2M tokens cannot be checked for group membership. "
+                            "Use permission_required instead."
+                        ),
+                    }), 403
+
+                groups = userinfo.get("groups", [])
+
+                if group not in groups:
+                    logger.warning(f'Group denied: {userinfo.get("sub")} not in group {group}')
+
+                    return jsonify({
+                        "error": "Forbidden",
+                        "message": f"{group} group membership required",
+                        "your_groups": groups,
+                    }), 403
+
+                kwargs["userinfo"] = userinfo
+                return f(*args, **kwargs)
+
+            # Session-based (browser mode)
             if not current_user.is_authenticated:
                 abort(401)
 
@@ -148,22 +289,59 @@ def group_required(group):
 
 def any_group_required(*groups):
     """
-    Decorator die vereist dat gebruiker in één van de opgegeven groepen zit.
+    Unified decorator that requires membership in ANY of the specified groups via Bearer token OR session.
+
+    NOTE: Only works for user tokens (not M2M tokens).
 
     Args:
         *groups: Variable aantal group names
 
     Example:
         @app.route('/special')
-        @login_required
         @any_group_required('vip', 'premium', 'admin')
-        def special_content():
+        def special_content(userinfo=None):
+            # Works for both API and browser requests
             return 'Special content'
     """
 
     def decorator(f):
         @wraps(f)
         def decorated_function(*args, **kwargs):
+            # Check for Bearer token (API mode)
+            if _is_bearer_token_request():
+                token = _get_bearer_token()
+                userinfo = _get_userinfo_from_token(token)
+
+                if not userinfo:
+                    return jsonify({"error": "Invalid or expired token"}), 401
+
+                # Check if M2M token
+                if userinfo.get("token_type") == "m2m":
+                    return jsonify({
+                        "error": "Forbidden",
+                        "message": (
+                            "M2M tokens cannot be checked for group membership. "
+                            "Use any_permission_required instead."
+                        ),
+                    }), 403
+
+                user_groups = userinfo.get("groups", [])
+
+                if not any(g in user_groups for g in groups):
+                    logger.warning(
+                        f'Group denied: {userinfo.get("sub")} not in any of groups {groups}'
+                    )
+
+                    return jsonify({
+                        "error": "Forbidden",
+                        "message": f'Membership in one of these groups required: {", ".join(groups)}',
+                        "your_groups": user_groups,
+                    }), 403
+
+                kwargs["userinfo"] = userinfo
+                return f(*args, **kwargs)
+
+            # Session-based (browser mode)
             if not current_user.is_authenticated:
                 abort(401)
 
@@ -235,6 +413,53 @@ def require_2fa(f):
     return decorated_function
 
 
+
+# Extra decorators for explicit user/m2m enforcement
+def user_only(f):
+    """
+    Decorator: alleen user tokens toegestaan (API) of session user.
+    API: blokkeert M2M tokens. Session: altijd toegestaan.
+    """
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if _is_bearer_token_request():
+            token = _get_bearer_token()
+            userinfo = _get_userinfo_from_token(token)
+            if not userinfo:
+                return jsonify({"error": "Invalid or expired token"}), 401
+            if userinfo.get("token_type") == "m2m":
+                return jsonify({
+                    "error": "Forbidden",
+                    "message": "This endpoint requires a user token, not M2M",
+                }), 403
+            kwargs["userinfo"] = userinfo
+            return f(*args, **kwargs)
+        # Session: altijd toegestaan
+        return f(*args, **kwargs)
+    return decorated_function
+
+def m2m_only(f):
+    """
+    Decorator: alleen M2M tokens toegestaan (API). Session users geblokkeerd.
+    """
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if _is_bearer_token_request():
+            token = _get_bearer_token()
+            userinfo = _get_userinfo_from_token(token)
+            if not userinfo:
+                return jsonify({"error": "Invalid or expired token"}), 401
+            if userinfo.get("token_type") != "m2m":
+                return jsonify({
+                    "error": "Forbidden",
+                    "message": "This endpoint requires an M2M token, not user",
+                }), 403
+            kwargs["userinfo"] = userinfo
+            return f(*args, **kwargs)
+        # Session: nooit toegestaan
+        return jsonify({"error": "Forbidden", "message": "Session users not allowed"}), 403
+    return decorated_function
+
 __all__ = [
     "login_required",
     "permission_required",
@@ -242,4 +467,6 @@ __all__ = [
     "group_required",
     "any_group_required",
     "require_2fa",
+    "user_only",
+    "m2m_only",
 ]

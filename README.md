@@ -34,19 +34,17 @@ def dashboard():
 ### Stateless (REST APIs & M2M)
 
 ```python
-from flask_rpr_oauth import permission_required_stateless
+from flask_rpr_oauth import permission_required
 
 app = Flask(__name__)
 app.config['OAUTH_BASE_URL'] = 'https://auth.roleplayreality.nl'
 
 @app.route('/api/kick-player', methods=['POST'])
-@permission_required_stateless('fivem.player.kick')
+@permission_required('fivem.player.kick')
 def kick_player(userinfo):
     # Werkt voor M2M tokens EN user tokens!
     return {'status': 'success'}
 ```
-
-👉 **[Stateless API Mode Documentation](STATELESS.md)** - Voor REST APIs, M2M tokens, microservices
 
 ## Installatie
 
@@ -120,7 +118,7 @@ def admin_panel():
     return "Admin panel"
 
 @app.route('/moderator')
-@permission_required(['moderator', 'admin'])  # Any permission
+@any_permission_required('moderator', 'admin')
 def moderator_panel():
     return "Moderator panel"
 ```

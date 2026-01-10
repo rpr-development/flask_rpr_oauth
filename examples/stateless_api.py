@@ -8,9 +8,9 @@ Deze API ondersteunt BEIDE:
 
 from flask import Flask, jsonify, request
 from flask_rpr_oauth import (
-    permission_required_stateless,
-    any_permission_required_stateless,
-    token_required,
+    permission_required,
+    any_permission_required,
+    login_required,
     user_only,
     m2m_only,
 )
@@ -27,8 +27,8 @@ app.config["SECRET_KEY"] = "your-secret-key"
 
 
 @app.route("/api/status")
-@token_required
-def api_status(userinfo):
+@login_required
+def api_status(userinfo=None):
     """
     Basis endpoint - accepteert zowel user als M2M tokens.
 
@@ -66,8 +66,8 @@ def api_status(userinfo):
 
 
 @app.route("/api/kick-player", methods=["POST"])
-@permission_required_stateless("fivem.player.kick")
-def kick_player(userinfo):
+@permission_required("fivem.player.kick")
+def kick_player(userinfo=None):
     """
     Kick een speler - werkt voor BEIDE token types.
 
@@ -112,8 +112,8 @@ def kick_player(userinfo):
 
 
 @app.route("/api/ban-player", methods=["POST"])
-@permission_required_stateless("fivem.player.ban")
-def ban_player(userinfo):
+@permission_required("fivem.player.ban")
+def ban_player(userinfo=None):
     """Ban een speler - werkt voor beide token types."""
     data = request.get_json()
     player_id = data.get("player_id")
@@ -133,8 +133,8 @@ def ban_player(userinfo):
 
 
 @app.route("/api/moderate", methods=["POST"])
-@any_permission_required_stateless("fivem.player.kick", "fivem.player.ban", "fivem.admin.noclip")
-def moderate(userinfo):
+@any_permission_required("fivem.player.kick", "fivem.player.ban", "fivem.admin.noclip")
+def moderate(userinfo=None):
     """
     Moderatie actie - vereist minimaal ÉÉN van de permissions.
 
@@ -160,8 +160,8 @@ def moderate(userinfo):
 
 @app.route("/api/profile")
 @user_only
-@permission_required_stateless("profile.view")
-def get_profile(userinfo):
+@permission_required("profile.view")
+def get_profile(userinfo=None):
     """
     Haal user profiel op - ALLEEN voor user tokens.
 
@@ -190,8 +190,8 @@ def get_profile(userinfo):
 
 @app.route("/api/settings", methods=["PUT"])
 @user_only
-@permission_required_stateless("profile.edit")
-def update_settings(userinfo):
+@permission_required("profile.edit")
+def update_settings(userinfo=None):
     """Update user settings - alleen voor user tokens."""
     data = request.get_json()
 
@@ -207,8 +207,8 @@ def update_settings(userinfo):
 
 @app.route("/api/server/heartbeat", methods=["POST"])
 @m2m_only
-@permission_required_stateless("fivem.server.status")
-def server_heartbeat(userinfo):
+@permission_required("fivem.server.status")
+def server_heartbeat(userinfo=None):
     """
     Server heartbeat - ALLEEN voor M2M tokens.
 
@@ -241,8 +241,8 @@ def server_heartbeat(userinfo):
 
 @app.route("/api/server/metrics", methods=["POST"])
 @m2m_only
-@permission_required_stateless("fivem.server.metrics")
-def server_metrics(userinfo):
+@permission_required("fivem.server.metrics")
+def server_metrics(userinfo=None):
     """Server metrics upload - alleen voor M2M tokens."""
     data = request.get_json()
 
@@ -257,8 +257,8 @@ def server_metrics(userinfo):
 
 
 @app.route("/api/whoami")
-@token_required
-def whoami(userinfo):
+@login_required
+def whoami(userinfo=None):
     """
     Debug endpoint - toont alle info over het huidige token.
 

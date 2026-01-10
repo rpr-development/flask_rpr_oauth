@@ -24,14 +24,7 @@ from .decorators import (
 )
 from .models import OAuthUser, current_user
 from .exceptions import OAuthError, TokenExpiredError, PermissionDeniedError
-from .stateless import (
-    token_required,
-    permission_required_stateless,
-    any_permission_required_stateless,
-    scope_required_stateless,
-    group_required_stateless,
-    user_only,
-    m2m_only,
+from .helpers import (
     get_userinfo_from_token,
     clear_userinfo_cache,
 )
@@ -47,14 +40,7 @@ __all__ = [
     "group_required",
     "any_group_required",
     "require_2fa",
-    # Stateless (new - voor APIs en M2M)
-    "token_required",
-    "permission_required_stateless",
-    "any_permission_required_stateless",
-    "scope_required_stateless",
-    "group_required_stateless",
-    "user_only",
-    "m2m_only",
+    # Stateless helpers
     "get_userinfo_from_token",
     "clear_userinfo_cache",
     # Exceptions
