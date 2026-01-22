@@ -15,6 +15,13 @@ from .exceptions import PermissionDeniedError, GroupDeniedError
 
 logger = logging.getLogger(__name__)
 
+def _is_ajax_request():
+    """Check if request is an AJAX/fetch request."""
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+        return True
+    accept = request.headers.get('Accept', '')
+    return 'application/json' in accept
+
 
 def _is_bearer_token_request():
     """Check if request uses Bearer token authentication (API mode)."""
@@ -71,6 +78,10 @@ def login_required(f):
 
         # Session-based (browser mode)
         if not current_user.is_authenticated:
+                # AJAX/fetch requests krijgen 401 JSON
+            if _is_ajax_request():
+                return jsonify({"error": "Authentication required"}), 401
+
             # Store next URL in session
             session["next"] = request.url
             # Redirect to login
