@@ -78,7 +78,7 @@ def login_required(f):
 
         # Session-based (browser mode)
         if not current_user.is_authenticated:
-                # AJAX/fetch requests krijgen 401 JSON
+            # AJAX/fetch requests krijgen 401 JSON
             if _is_ajax_request():
                 return jsonify({"error": "Authentication required"}), 401
 
