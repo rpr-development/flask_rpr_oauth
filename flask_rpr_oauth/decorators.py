@@ -15,12 +15,13 @@ from .exceptions import PermissionDeniedError, GroupDeniedError
 
 logger = logging.getLogger(__name__)
 
+
 def _is_ajax_request():
     """Check if request is an AJAX/fetch request."""
-    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+    if request.headers.get("X-Requested-With") == "XMLHttpRequest":
         return True
-    accept = request.headers.get('Accept', '')
-    return 'application/json' in accept
+    accept = request.headers.get("Accept", "")
+    return "application/json" in accept
 
 
 def _is_bearer_token_request():
