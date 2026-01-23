@@ -93,26 +93,51 @@ def login_required(f):
     return decorated_function
 
 
-def permission_required(permission):
+def permission_required(permission=None, **method_permissions):
     """
     Unified decorator that requires a specific permission via Bearer token OR session.
 
     Works for BOTH user tokens AND M2M tokens in API mode.
+    Supports both single permission and per-method permissions.
 
     Args:
-        permission (str): Required permission string
+        permission (str): Required permission string (for all methods)
+        **method_permissions: Per-method permissions (GET="view", POST="edit", etc.)
 
-    Example:
+    Examples:
+        # Single permission for all methods
         @app.route('/admin')
         @permission_required('admin.access')
         def admin_panel(userinfo=None):
-            # Works for both API and browser requests
             return 'Admin panel'
+
+        # Different permissions per HTTP method
+        @app.route('/melding', methods=['GET', 'POST', 'DELETE'])
+        @permission_required(GET="melding.view", POST="melding.edit", DELETE="melding.delete")
+        def melding_endpoint(userinfo=None):
+            return 'Melding endpoint'
     """
 
     def decorator(f):
         @wraps(f)
         def decorated_function(*args, **kwargs):
+            # Determine required permission based on HTTP method
+            if method_permissions:
+                method = request.method.upper()
+                required_permission = method_permissions.get(method)
+                if required_permission is None:
+                    # No permission specified for this method - allow access
+                    # Check for Bearer token to inject userinfo
+                    if _is_bearer_token_request():
+                        token = _get_bearer_token()
+                        userinfo = _get_userinfo_from_token(token)
+                        if not userinfo:
+                            return jsonify({"error": "Invalid or expired token"}), 401
+                        kwargs["userinfo"] = userinfo
+                    return f(*args, **kwargs)
+            else:
+                required_permission = permission
+
             # Check for Bearer token (API mode)
             if _is_bearer_token_request():
                 token = _get_bearer_token()
@@ -124,20 +149,20 @@ def permission_required(permission):
                 # Check permission for API token
                 permissions = userinfo.get("permissions", [])
 
-                if permission not in permissions:
+                if required_permission not in permissions:
                     token_type = userinfo.get("token_type", "unknown")
                     subject = userinfo.get("sub", "unknown")
 
                     logger.warning(
-                        f"Permission denied: {subject} ({token_type}) tried to access {permission}. "
-                        f"Available permissions: {permissions}"
+                        f"Permission denied: {subject} ({token_type}) tried to access "
+                        f"{required_permission}. Available permissions: {permissions}"
                     )
 
                     return (
                         jsonify(
                             {
                                 "error": "Forbidden",
-                                "message": f"{permission} permission required",
+                                "message": f"{required_permission} permission required",
                                 "your_permissions": permissions,
                             }
                         ),
@@ -156,9 +181,11 @@ def permission_required(permission):
                 logger.error(f"User {current_user.get_id()} heeft geen has_permission method")
                 abort(403)
 
-            if not current_user.has_permission(permission):
-                logger.warning(f"User {current_user.get_id()} heeft geen permission: {permission}")
-                raise PermissionDeniedError(permission=permission)
+            if not current_user.has_permission(required_permission):
+                logger.warning(
+                    f"User {current_user.get_id()} heeft geen permission: {required_permission}"
+                )
+                raise PermissionDeniedError(permission=required_permission)
 
             return f(*args, **kwargs)
 
@@ -167,24 +194,51 @@ def permission_required(permission):
     return decorator
 
 
-def any_permission_required(*permissions):
+def any_permission_required(*permissions, **method_permissions):
     """
     Unified decorator that requires ANY of the specified permissions via Bearer token OR session.
 
-    Args:
-        *permissions: Variable aantal permission strings
+    Supports both single set of permissions and per-method permissions.
 
-    Example:
+    Args:
+        *permissions: Variable aantal permission strings (for all methods)
+        **method_permissions: Per-method permission lists (GET="perm1,perm2", POST="perm3,perm4")
+
+    Examples:
+        # Single set of permissions for all methods
         @app.route('/moderate')
         @any_permission_required('moderator', 'admin')
         def moderate(userinfo=None):
-            # Works for both API and browser requests
             return 'Moderation panel'
+
+        # Different permission sets per HTTP method
+        @app.route('/melding', methods=['GET', 'POST'])
+        @any_permission_required(GET="melding.view,melding.list", POST="melding.edit,melding.create")
+        def melding_endpoint(userinfo=None):
+            return 'Melding endpoint'
     """
 
     def decorator(f):
         @wraps(f)
         def decorated_function(*args, **kwargs):
+            # Determine required permissions based on HTTP method
+            if method_permissions:
+                method = request.method.upper()
+                method_perms_str = method_permissions.get(method)
+                if method_perms_str is None:
+                    # No permissions specified for this method - allow access
+                    if _is_bearer_token_request():
+                        token = _get_bearer_token()
+                        userinfo = _get_userinfo_from_token(token)
+                        if not userinfo:
+                            return jsonify({"error": "Invalid or expired token"}), 401
+                        kwargs["userinfo"] = userinfo
+                    return f(*args, **kwargs)
+                # Parse comma-separated permissions
+                required_permissions = [p.strip() for p in method_perms_str.split(",")]
+            else:
+                required_permissions = permissions
+
             # Check for Bearer token (API mode)
             if _is_bearer_token_request():
                 token = _get_bearer_token()
@@ -196,17 +250,20 @@ def any_permission_required(*permissions):
                 user_permissions = userinfo.get("permissions", [])
 
                 # Check if token has ANY of the required permissions
-                if not any(perm in user_permissions for perm in permissions):
+                if not any(perm in user_permissions for perm in required_permissions):
                     logger.warning(
-                        f'Permission denied: {userinfo.get("sub")} tried to access endpoint requiring '
-                        f"one of {permissions}. Has: {user_permissions}"
+                        f'Permission denied: {userinfo.get("sub")} tried to access endpoint '
+                        f"requiring one of {required_permissions}. Has: {user_permissions}"
                     )
 
                     return (
                         jsonify(
                             {
                                 "error": "Forbidden",
-                                "message": f'One of these permissions required: {", ".join(permissions)}',
+                                "message": (
+                                    f'One of these permissions required: '
+                                    f'{", ".join(required_permissions)}'
+                                ),
                                 "your_permissions": user_permissions,
                             }
                         ),
@@ -224,12 +281,13 @@ def any_permission_required(*permissions):
                 logger.error(f"User {current_user.get_id()} heeft geen has_any_permission method")
                 abort(403)
 
-            if not current_user.has_any_permission(*permissions):
+            if not current_user.has_any_permission(*required_permissions):
                 logger.warning(
-                    f"User {current_user.get_id()} heeft geen van de permissions: {permissions}"
+                    f"User {current_user.get_id()} heeft geen van de permissions: "
+                    f"{required_permissions}"
                 )
                 raise PermissionDeniedError(
-                    message=f"Een van deze rechten is vereist: {', '.join(permissions)}"
+                    message=f"Een van deze rechten is vereist: {', '.join(required_permissions)}"
                 )
 
             return f(*args, **kwargs)
@@ -239,26 +297,50 @@ def any_permission_required(*permissions):
     return decorator
 
 
-def group_required(group):
+def group_required(group=None, **method_groups):
     """
     Unified decorator that requires group membership via Bearer token OR session.
 
     NOTE: Only works for user tokens (not M2M tokens).
+    Supports both single group and per-method groups.
 
     Args:
-        group (str): Required group name
+        group (str): Required group name (for all methods)
+        **method_groups: Per-method groups (GET="viewers", POST="editors", etc.)
 
-    Example:
+    Examples:
+        # Single group for all methods
         @app.route('/staff')
         @group_required('staff')
         def staff_panel(userinfo=None):
-            # Works for both API and browser requests
             return 'Staff panel'
+
+        # Different groups per HTTP method
+        @app.route('/content', methods=['GET', 'POST', 'DELETE'])
+        @group_required(GET="viewers", POST="editors", DELETE="admins")
+        def content_endpoint(userinfo=None):
+            return 'Content endpoint'
     """
 
     def decorator(f):
         @wraps(f)
         def decorated_function(*args, **kwargs):
+            # Determine required group based on HTTP method
+            if method_groups:
+                method = request.method.upper()
+                required_group = method_groups.get(method)
+                if required_group is None:
+                    # No group specified for this method - allow access
+                    if _is_bearer_token_request():
+                        token = _get_bearer_token()
+                        userinfo = _get_userinfo_from_token(token)
+                        if not userinfo:
+                            return jsonify({"error": "Invalid or expired token"}), 401
+                        kwargs["userinfo"] = userinfo
+                    return f(*args, **kwargs)
+            else:
+                required_group = group
+
             # Check for Bearer token (API mode)
             if _is_bearer_token_request():
                 token = _get_bearer_token()
@@ -284,14 +366,16 @@ def group_required(group):
 
                 groups = userinfo.get("groups", [])
 
-                if group not in groups:
-                    logger.warning(f'Group denied: {userinfo.get("sub")} not in group {group}')
+                if required_group not in groups:
+                    logger.warning(
+                        f'Group denied: {userinfo.get("sub")} not in group {required_group}'
+                    )
 
                     return (
                         jsonify(
                             {
                                 "error": "Forbidden",
-                                "message": f"{group} group membership required",
+                                "message": f"{required_group} group membership required",
                                 "your_groups": groups,
                             }
                         ),
@@ -309,9 +393,9 @@ def group_required(group):
                 logger.error(f"User {current_user.get_id()} heeft geen in_group method")
                 abort(403)
 
-            if not current_user.in_group(group):
-                logger.warning(f"User {current_user.get_id()} zit niet in groep: {group}")
-                raise GroupDeniedError(group=group)
+            if not current_user.in_group(required_group):
+                logger.warning(f"User {current_user.get_id()} zit niet in groep: {required_group}")
+                raise GroupDeniedError(group=required_group)
 
             return f(*args, **kwargs)
 
@@ -320,26 +404,52 @@ def group_required(group):
     return decorator
 
 
-def any_group_required(*groups):
+def any_group_required(*groups, **method_groups):
     """
     Unified decorator that requires membership in ANY of the specified groups via Bearer token OR session.
 
     NOTE: Only works for user tokens (not M2M tokens).
+    Supports both single set of groups and per-method groups.
 
     Args:
-        *groups: Variable aantal group names
+        *groups: Variable aantal group names (for all methods)
+        **method_groups: Per-method group lists (GET="group1,group2", POST="group3,group4")
 
-    Example:
+    Examples:
+        # Single set of groups for all methods
         @app.route('/special')
         @any_group_required('vip', 'premium', 'admin')
         def special_content(userinfo=None):
-            # Works for both API and browser requests
             return 'Special content'
+
+        # Different group sets per HTTP method
+        @app.route('/content', methods=['GET', 'POST'])
+        @any_group_required(GET="viewers,guests", POST="editors,admins")
+        def content_endpoint(userinfo=None):
+            return 'Content endpoint'
     """
 
     def decorator(f):
         @wraps(f)
         def decorated_function(*args, **kwargs):
+            # Determine required groups based on HTTP method
+            if method_groups:
+                method = request.method.upper()
+                method_grps_str = method_groups.get(method)
+                if method_grps_str is None:
+                    # No groups specified for this method - allow access
+                    if _is_bearer_token_request():
+                        token = _get_bearer_token()
+                        userinfo = _get_userinfo_from_token(token)
+                        if not userinfo:
+                            return jsonify({"error": "Invalid or expired token"}), 401
+                        kwargs["userinfo"] = userinfo
+                    return f(*args, **kwargs)
+                # Parse comma-separated groups
+                required_groups = [g.strip() for g in method_grps_str.split(",")]
+            else:
+                required_groups = groups
+
             # Check for Bearer token (API mode)
             if _is_bearer_token_request():
                 token = _get_bearer_token()
@@ -365,16 +475,20 @@ def any_group_required(*groups):
 
                 user_groups = userinfo.get("groups", [])
 
-                if not any(g in user_groups for g in groups):
+                if not any(g in user_groups for g in required_groups):
                     logger.warning(
-                        f'Group denied: {userinfo.get("sub")} not in any of groups {groups}'
+                        f'Group denied: {userinfo.get("sub")} not in any of groups '
+                        f"{required_groups}"
                     )
 
                     return (
                         jsonify(
                             {
                                 "error": "Forbidden",
-                                "message": f'Membership in one of these groups required: {", ".join(groups)}',
+                                "message": (
+                                    f'Membership in one of these groups required: '
+                                    f'{", ".join(required_groups)}'
+                                ),
                                 "your_groups": user_groups,
                             }
                         ),
@@ -392,12 +506,16 @@ def any_group_required(*groups):
                 logger.error(f"User {current_user.get_id()} heeft geen in_any_group method")
                 abort(403)
 
-            if not current_user.in_any_group(*groups):
+            if not current_user.in_any_group(*required_groups):
                 logger.warning(
-                    f"User {current_user.get_id()} zit niet in een van de groepen: {groups}"
+                    f"User {current_user.get_id()} zit niet in een van de groepen: "
+                    f"{required_groups}"
                 )
                 raise GroupDeniedError(
-                    message=f"Lidmaatschap van een van deze groepen is vereist: {', '.join(groups)}"
+                    message=(
+                        f"Lidmaatschap van een van deze groepen is vereist: "
+                        f"{', '.join(required_groups)}"
+                    )
                 )
 
             return f(*args, **kwargs)
