@@ -6,7 +6,7 @@ User model voor OAuth authenticatie.
 """
 
 from typing import Optional
-from flask import session
+from flask import g, session
 
 
 class OAuthUser:
@@ -250,4 +250,71 @@ class _CurrentUserProxy:
 # Create singleton instance
 current_user = _CurrentUserProxy()
 
-__all__ = ["OAuthUser", "current_user"]
+
+class _CurrentTokenProxy:
+    """
+    Proxy voor de huidige API token info (Bearer token userinfo).
+
+    Werkt net als current_user, maar dan voor API requests met Bearer tokens.
+    De decorators slaan de token info op in flask.g, deze proxy leest het daaruit.
+
+    Usage:
+        from flask_rpr_oauth import current_token
+
+        @permission_required('melding.view')
+        def my_endpoint():
+            if current_token:
+                print(current_token.sub)           # subject (user_id of client_id)
+                print(current_token.token_type)     # 'user' of 'm2m'
+                print(current_token.permissions)    # ['melding.view', ...]
+            return 'OK'
+    """
+
+    def _get_info(self):
+        """Get token info from flask.g request context."""
+        return getattr(g, '_rpr_token_info', None)
+
+    @property
+    def is_authenticated(self):
+        """Check if a valid Bearer token is present."""
+        return self._get_info() is not None
+
+    def get(self, key, default=None):
+        """Dict-like access to token info fields."""
+        info = self._get_info()
+        if info is None:
+            return default
+        return info.get(key, default)
+
+    def __getattr__(self, name):
+        """Attribute access to token info fields (current_token.sub, etc.)."""
+        info = self._get_info()
+        if info is None:
+            raise AttributeError("No token info available - is this a Bearer token request?")
+        if isinstance(info, dict):
+            try:
+                return info[name]
+            except KeyError:
+                raise AttributeError(f"Token info has no attribute '{name}'")
+        return getattr(info, name)
+
+    def __bool__(self):
+        """Truthy if a valid Bearer token is present."""
+        return self._get_info() is not None
+
+    def __contains__(self, key):
+        """Support 'key in current_token' syntax."""
+        info = self._get_info()
+        return info is not None and key in info
+
+    def __repr__(self):
+        info = self._get_info()
+        if info is None:
+            return "<CurrentToken: anonymous>"
+        return f"<CurrentToken: {info.get('token_type', '?')} sub={info.get('sub', '?')}>"
+
+
+# Create singleton instance
+current_token = _CurrentTokenProxy()
+
+__all__ = ["OAuthUser", "current_user", "current_token"]

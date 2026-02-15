@@ -22,7 +22,7 @@ from .decorators import (
     any_group_required,
     require_2fa,
 )
-from .models import OAuthUser, current_user
+from .models import OAuthUser, current_user, current_token
 from .exceptions import OAuthError, TokenExpiredError, PermissionDeniedError
 from .helpers import (
     get_userinfo_from_token,
@@ -34,6 +34,7 @@ __all__ = [
     "RPRAuth",
     "OAuthUser",
     "current_user",
+    "current_token",
     "login_required",
     "permission_required",
     "any_permission_required",

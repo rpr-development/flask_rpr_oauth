@@ -8,7 +8,7 @@ Automatically detects Bearer tokens and falls back to session-based auth.
 
 import logging
 from functools import wraps
-from flask import abort, current_app, session, redirect, url_for, request, jsonify
+from flask import abort, current_app, g, session, redirect, url_for, request, jsonify
 from .models import current_user
 from .exceptions import PermissionDeniedError, GroupDeniedError
 
@@ -49,16 +49,17 @@ def login_required(f):
     """
     Unified decorator that requires authentication via Bearer token OR session.
 
-    - Bearer token (API): Validates token and injects 'userinfo' kwarg
+    - Bearer token (API): Validates token and stores info in current_token (via flask.g)
     - Session (browser): Checks current_user and redirects to login if needed
 
     Usage:
         @login_required
-        def my_endpoint(userinfo=None):
-            # For API calls: userinfo contains token data
-            # For browser: userinfo is None, use current_user instead
-            if userinfo:
-                user_id = userinfo['sub']  # API mode
+        def my_endpoint():
+            # For API calls: use current_token
+            # For browser: use current_user
+            from flask_rpr_oauth import current_token
+            if current_token:
+                user_id = current_token.sub  # API mode
             else:
                 user_id = current_user.get_id()  # Browser mode
     """
@@ -73,8 +74,8 @@ def login_required(f):
             if not userinfo:
                 return jsonify({"error": "Invalid or expired token"}), 401
 
-            # Inject userinfo for API calls
-            kwargs["userinfo"] = userinfo
+            # Store token info in flask.g for current_token proxy
+            g._rpr_token_info = userinfo
             return f(*args, **kwargs)
 
         # Session-based (browser mode)
@@ -108,13 +109,13 @@ def permission_required(permission=None, **method_permissions):
         # Single permission for all methods
         @app.route('/admin')
         @permission_required('admin.access')
-        def admin_panel(userinfo=None):
+        def admin_panel():
             return 'Admin panel'
 
         # Different permissions per HTTP method
         @app.route('/melding', methods=['GET', 'POST', 'DELETE'])
         @permission_required(GET="melding.view", POST="melding.edit", DELETE="melding.delete")
-        def melding_endpoint(userinfo=None):
+        def melding_endpoint():
             return 'Melding endpoint'
     """
 
@@ -133,7 +134,7 @@ def permission_required(permission=None, **method_permissions):
                         userinfo = _get_userinfo_from_token(token)
                         if not userinfo:
                             return jsonify({"error": "Invalid or expired token"}), 401
-                        kwargs["userinfo"] = userinfo
+                        g._rpr_token_info = userinfo
                     return f(*args, **kwargs)
             else:
                 required_permission = permission
@@ -169,8 +170,8 @@ def permission_required(permission=None, **method_permissions):
                         403,
                     )
 
-                # Inject userinfo for API calls
-                kwargs["userinfo"] = userinfo
+                # Store token info in flask.g for current_token proxy
+                g._rpr_token_info = userinfo
                 return f(*args, **kwargs)
 
             # Session-based (browser mode)
@@ -208,13 +209,13 @@ def any_permission_required(*permissions, **method_permissions):
         # Single set of permissions for all methods
         @app.route('/moderate')
         @any_permission_required('moderator', 'admin')
-        def moderate(userinfo=None):
+        def moderate():
             return 'Moderation panel'
 
         # Different permission sets per HTTP method
         @app.route('/melding', methods=['GET', 'POST'])
         @any_permission_required(GET="melding.view,melding.list", POST="melding.edit,melding.create")
-        def melding_endpoint(userinfo=None):
+        def melding_endpoint():
             return 'Melding endpoint'
     """
 
@@ -232,7 +233,7 @@ def any_permission_required(*permissions, **method_permissions):
                         userinfo = _get_userinfo_from_token(token)
                         if not userinfo:
                             return jsonify({"error": "Invalid or expired token"}), 401
-                        kwargs["userinfo"] = userinfo
+                        g._rpr_token_info = userinfo
                     return f(*args, **kwargs)
                 # Parse comma-separated permissions
                 required_permissions = [p.strip() for p in method_perms_str.split(",")]
@@ -270,7 +271,7 @@ def any_permission_required(*permissions, **method_permissions):
                         403,
                     )
 
-                kwargs["userinfo"] = userinfo
+                g._rpr_token_info = userinfo
                 return f(*args, **kwargs)
 
             # Session-based (browser mode)
@@ -312,13 +313,13 @@ def group_required(group=None, **method_groups):
         # Single group for all methods
         @app.route('/staff')
         @group_required('staff')
-        def staff_panel(userinfo=None):
+        def staff_panel():
             return 'Staff panel'
 
         # Different groups per HTTP method
         @app.route('/content', methods=['GET', 'POST', 'DELETE'])
         @group_required(GET="viewers", POST="editors", DELETE="admins")
-        def content_endpoint(userinfo=None):
+        def content_endpoint():
             return 'Content endpoint'
     """
 
@@ -336,7 +337,7 @@ def group_required(group=None, **method_groups):
                         userinfo = _get_userinfo_from_token(token)
                         if not userinfo:
                             return jsonify({"error": "Invalid or expired token"}), 401
-                        kwargs["userinfo"] = userinfo
+                        g._rpr_token_info = userinfo
                     return f(*args, **kwargs)
             else:
                 required_group = group
@@ -382,7 +383,7 @@ def group_required(group=None, **method_groups):
                         403,
                     )
 
-                kwargs["userinfo"] = userinfo
+                g._rpr_token_info = userinfo
                 return f(*args, **kwargs)
 
             # Session-based (browser mode)
@@ -419,13 +420,13 @@ def any_group_required(*groups, **method_groups):
         # Single set of groups for all methods
         @app.route('/special')
         @any_group_required('vip', 'premium', 'admin')
-        def special_content(userinfo=None):
+        def special_content():
             return 'Special content'
 
         # Different group sets per HTTP method
         @app.route('/content', methods=['GET', 'POST'])
         @any_group_required(GET="viewers,guests", POST="editors,admins")
-        def content_endpoint(userinfo=None):
+        def content_endpoint():
             return 'Content endpoint'
     """
 
@@ -443,7 +444,7 @@ def any_group_required(*groups, **method_groups):
                         userinfo = _get_userinfo_from_token(token)
                         if not userinfo:
                             return jsonify({"error": "Invalid or expired token"}), 401
-                        kwargs["userinfo"] = userinfo
+                        g._rpr_token_info = userinfo
                     return f(*args, **kwargs)
                 # Parse comma-separated groups
                 required_groups = [g.strip() for g in method_grps_str.split(",")]
@@ -495,7 +496,7 @@ def any_group_required(*groups, **method_groups):
                         403,
                     )
 
-                kwargs["userinfo"] = userinfo
+                g._rpr_token_info = userinfo
                 return f(*args, **kwargs)
 
             # Session-based (browser mode)
@@ -598,7 +599,7 @@ def user_only(f):
                     ),
                     403,
                 )
-            kwargs["userinfo"] = userinfo
+            g._rpr_token_info = userinfo
             return f(*args, **kwargs)
         # Session: altijd toegestaan
         return f(*args, **kwargs)
@@ -628,7 +629,7 @@ def m2m_only(f):
                     ),
                     403,
                 )
-            kwargs["userinfo"] = userinfo
+            g._rpr_token_info = userinfo
             return f(*args, **kwargs)
         # Session: nooit toegestaan
         return jsonify({"error": "Forbidden", "message": "Session users not allowed"}), 403
