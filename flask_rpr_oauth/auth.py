@@ -23,6 +23,15 @@ except ImportError:
     def csrf_exempt(func):
         return func
 
+try:
+    from flask_session import Session as FlaskSession
+    from flask_session.base import ServerSideSessionInterface as _ServerSideSessionInterface
+
+    FLASK_SESSION_AVAILABLE = True
+except ImportError:
+    FLASK_SESSION_AVAILABLE = False
+    _ServerSideSessionInterface = None
+
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +89,25 @@ class RPRAuth:
         app.config.setdefault("OAUTH_AUTO_VALIDATE", True)
         app.config.setdefault("WEBHOOK_SECRET", None)
         app.config.setdefault("OAUTH_PARTITIONED_COOKIES", True)
+
+        # Voor CHIPS/Partitioned cookie support moet de session cookie SameSite=None; Secure
+        # zijn, anders wordt het niet meegestuurd bij cross-site OAuth redirects (bijv. FiveM NUI).
+        # Zonder dit raakt Authlib de opgeslagen OAuth state kwijt → mismatching_state error.
+        if app.config.get("OAUTH_PARTITIONED_COOKIES", True):
+            app.config.setdefault("SESSION_COOKIE_SAMESITE", "None")
+            app.config.setdefault("SESSION_COOKIE_SECURE", True)
+
+        # Optionele Flask-Session integratie voor server-side sessie opslag.
+        # Voorkomt te grote session cookies die de OAuth state kunnen verliezen
+        # (mismatching_state). Configureer SESSION_TYPE in Flask config om in te schakelen.
+        # Sla initialisatie over als de app Flask-Session al heeft geïnitialiseerd.
+        if (
+            FLASK_SESSION_AVAILABLE
+            and app.config.get("SESSION_TYPE")
+            and not isinstance(app.session_interface, _ServerSideSessionInterface)
+        ):
+            FlaskSession(app)
+            logger.info("Flask-Session geïnitialiseerd (server-side sessie opslag actief)")
 
         # Initialiseer OAuth
         self.oauth = OAuth(app)
