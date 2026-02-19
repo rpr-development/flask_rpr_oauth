@@ -417,21 +417,25 @@ class RPRAuth:
 
     def require_2fa_reauth(self):
         """
-        Forceer opnieuw authenticatie met 2FA via OAuth.
+        Forceer authenticatie met 2FA via OAuth.
 
         Deze methode start een nieuwe OAuth flow met acr_values=mfa om
-        de gebruiker te dwingen opnieuw in te loggen met 2FA.
+        de gebruiker te dwingen 2FA te voltooien. Zonder prompt=login
+        hoeft de gebruiker niet opnieuw in te loggen als ze al een
+        actieve sessie hebben bij de auth server — ze worden alleen
+        naar 2FA doorgestuurd als dat nog niet gedaan is.
 
         Returns:
             Flask redirect response naar OAuth authorize endpoint
         """
         redirect_uri = current_app.config["OAUTH_REDIRECT_URI"]
 
-        # Start nieuwe OAuth flow met 2FA requirement
+        # Start OAuth flow met 2FA requirement (acr_values=mfa)
+        # Geen prompt=login: de auth server bepaalt zelf of de gebruiker
+        # al ingelogd is en alleen 2FA nog moet doen.
         return self.auth_server.authorize_redirect(
             redirect_uri,
-            acr_values="mfa",  # Request multi-factor authentication
-            prompt="login",  # Force re-authentication
+            acr_values="mfa",  # Vereist multi-factor authenticatie
         )
 
 
