@@ -302,7 +302,9 @@ class RPRAuth:
                         cookie = cookie.replace("Secure", "Secure; Partitioned")
                         logger.debug("Partitioned attribuut toegevoegd aan sessie cookie")
                     new_cookies.append(cookie)
-                response.headers["Set-Cookie"] = new_cookies
+                del response.headers["Set-Cookie"]
+                for cookie in new_cookies:
+                    response.headers.add("Set-Cookie", cookie)
             return response
 
         logger.info("Partitioned cookie handler geregistreerd (CHIPS ondersteuning)")
