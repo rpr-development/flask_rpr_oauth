@@ -93,7 +93,7 @@ class RPRAuth:
         # Voor CHIPS/Partitioned cookie support moet de session cookie SameSite=None; Secure
         # zijn, anders wordt het niet meegestuurd bij cross-site OAuth redirects (bijv. FiveM NUI).
         # Zonder dit raakt Authlib de opgeslagen OAuth state kwijt → mismatching_state error.
-        if app.config.get("OAUTH_PARTITIONED_COOKIES", True):
+        if app.config.get("OAUTH_PARTITIONED_COOKIES", True): 
             app.config.setdefault("SESSION_COOKIE_SAMESITE", "None")
             app.config.setdefault("SESSION_COOKIE_SECURE", True)
 
