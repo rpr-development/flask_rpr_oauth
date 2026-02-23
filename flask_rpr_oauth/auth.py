@@ -195,6 +195,7 @@ class RPRAuth:
 
             session["twofa_validated"] = twofa_validated
             session["acr"] = acr
+            session.modified = True  # Forceer sessie-opslag in Redis/filesystem
 
             logger.info(
                 f"User {userinfo.get('email')} succesvol ingelogd (2FA: {twofa_validated}, ACR: {acr})"
