@@ -405,8 +405,16 @@ class RPRAuth:
         if session.get("twofa_validated", False):
             return True
 
+        # Session does not confirm 2FA — fall back to server check
+        logger.info(
+            f"validate_2fa: session heeft geen 2FA bevestiging "
+            f"(acr={acr!r}, twofa_validated={session.get('twofa_validated')}), "
+            f"server check uitvoeren"
+        )
+
         # If not in session, check with server
         if "oauth_token" not in session:
+            logger.info("validate_2fa: geen oauth_token in session, return False")
             return False
 
         token = session["oauth_token"]
@@ -428,6 +436,7 @@ class RPRAuth:
 
                 # Check ACR claim (OAuth standard)
                 acr = data.get("acr", "pwd")
+                logger.info(f"validate_2fa: userinfo acr={acr!r}, twofa_validated={data.get('twofa_validated')}")
                 if acr in ["mfa", "phr"]:
                     session["acr"] = acr
                     session["twofa_validated"] = True
@@ -440,6 +449,7 @@ class RPRAuth:
 
                 return twofa_validated
 
+            logger.info(f"validate_2fa: userinfo endpoint status {response.status_code}, return False")
             return False
 
         except Exception as e:
