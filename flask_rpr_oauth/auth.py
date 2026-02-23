@@ -440,12 +440,14 @@ class RPRAuth:
                 if acr in ["mfa", "phr"]:
                     session["acr"] = acr
                     session["twofa_validated"] = True
+                    session.modified = True
                     return True
 
                 # Check legacy twofa_validated field
                 twofa_validated = data.get("twofa_validated", False)
                 session["twofa_validated"] = twofa_validated
                 session["acr"] = acr
+                session.modified = True
 
                 return twofa_validated
 
