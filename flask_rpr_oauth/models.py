@@ -221,8 +221,24 @@ class _CurrentUserProxy:
             claims=user_data,
         )
 
+    def __setattr__(self, name, value):
+        """Store enriched attributes in flask.g (per-request) instead of on the singleton."""
+        try:
+            if not hasattr(g, '_user_extra'):
+                g._user_extra = {}
+            g._user_extra[name] = value
+        except RuntimeError:
+            # Outside request context — fall back to object dict
+            object.__setattr__(self, name, value)
+
     def __getattr__(self, name):
-        """Proxy all attribute access to the actual user object."""
+        """Proxy attribute access: check g._user_extra first, then session-backed user."""
+        try:
+            user_extra = getattr(g, '_user_extra', {})
+            if name in user_extra:
+                return user_extra[name]
+        except RuntimeError:
+            pass  # Outside request context
         user = self._get_user()
         if user is None:
             # Return anonymous user attributes
