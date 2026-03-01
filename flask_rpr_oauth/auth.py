@@ -157,6 +157,17 @@ class RPRAuth:
     def _handle_callback(self):
         """OAuth callback handler."""
         try:
+            # Debug: log session keys and incoming state for mismatching_state diagnosis
+            incoming_state = request.args.get('state', '')
+            state_key = f'_state_auth_server_{incoming_state}'
+            session_keys = list(session.keys()) if session else []
+            has_state_key = state_key in session
+            logger.info(
+                f"[callback] incoming state={incoming_state!r} "
+                f"state_key_found={has_state_key} "
+                f"session_keys={session_keys}"
+            )
+
             # Haal token op
             token = self.auth_server.authorize_access_token()
             userinfo = self.auth_server.userinfo()
@@ -195,6 +206,7 @@ class RPRAuth:
 
             session["twofa_validated"] = twofa_validated
             session["acr"] = acr
+            session.modified = True  # Forceer sessie-opslag in Redis/filesystem
 
             logger.info(
                 f"User {userinfo.get('email')} succesvol ingelogd (2FA: {twofa_validated}, ACR: {acr})"
@@ -404,8 +416,16 @@ class RPRAuth:
         if session.get("twofa_validated", False):
             return True
 
+        # Session does not confirm 2FA — fall back to server check
+        logger.info(
+            f"validate_2fa: session heeft geen 2FA bevestiging "
+            f"(acr={acr!r}, twofa_validated={session.get('twofa_validated')}), "
+            f"server check uitvoeren"
+        )
+
         # If not in session, check with server
         if "oauth_token" not in session:
+            logger.info("validate_2fa: geen oauth_token in session, return False")
             return False
 
         token = session["oauth_token"]
@@ -427,18 +447,22 @@ class RPRAuth:
 
                 # Check ACR claim (OAuth standard)
                 acr = data.get("acr", "pwd")
+                logger.info(f"validate_2fa: userinfo acr={acr!r}, twofa_validated={data.get('twofa_validated')}")
                 if acr in ["mfa", "phr"]:
                     session["acr"] = acr
                     session["twofa_validated"] = True
+                    session.modified = True
                     return True
 
                 # Check legacy twofa_validated field
                 twofa_validated = data.get("twofa_validated", False)
                 session["twofa_validated"] = twofa_validated
                 session["acr"] = acr
+                session.modified = True
 
                 return twofa_validated
 
+            logger.info(f"validate_2fa: userinfo endpoint status {response.status_code}, return False")
             return False
 
         except Exception as e:
@@ -463,10 +487,15 @@ class RPRAuth:
         # Start OAuth flow met 2FA requirement (acr_values=mfa)
         # Geen prompt=login: de auth server bepaalt zelf of de gebruiker
         # al ingelogd is en alleen 2FA nog moet doen.
-        return self.auth_server.authorize_redirect(
+        response = self.auth_server.authorize_redirect(
             redirect_uri,
             acr_values="mfa",  # Vereist multi-factor authenticatie
         )
+        # Authlib slaat de state op in session; zorg dat Flask-Session dit persisteert
+        session.modified = True
+        state_keys = [k for k in session.keys() if k.startswith('_state_')]
+        logger.info(f"[require_2fa_reauth] state_keys_in_session={state_keys}")
+        return response
 
 
 __all__ = ["RPRAuth"]

@@ -86,6 +86,7 @@ def login_required(f):
 
             # Store next URL in session
             session["next"] = request.url
+            session.modified = True  # Forceer sessie-opslag in Redis/filesystem
             # Redirect to login
             return redirect(url_for("auth.login"))
 
@@ -550,6 +551,7 @@ def require_2fa(f):
         # Check of user is ingelogd
         if not current_user.is_authenticated:
             session["next"] = request.url
+            session.modified = True  # Forceer sessie-opslag in Redis/filesystem
             return redirect(url_for("auth.login"))
 
         # Haal RPRAuth instance op
@@ -566,6 +568,7 @@ def require_2fa(f):
 
             # Sla de huidige URL op in session voor redirect na 2FA
             session["next"] = request.url
+            session.modified = True  # Forceer sessie-opslag in Redis/filesystem
 
             # Start nieuwe OAuth flow met 2FA requirement (acr_values=mfa)
             return rpr_auth.require_2fa_reauth()
