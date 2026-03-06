@@ -89,6 +89,7 @@ class RPRAuth:
         app.config.setdefault("OAUTH_AUTO_VALIDATE", True)
         app.config.setdefault("WEBHOOK_SECRET", None)
         app.config.setdefault("OAUTH_PARTITIONED_COOKIES", True)
+        app.config.setdefault("OAUTH_TIMEOUT", 10)
 
         # Voor CHIPS/Partitioned cookie support moet de session cookie SameSite=None; Secure
         # zijn, anders wordt het niet meegestuurd bij cross-site OAuth redirects (bijv. FiveM NUI).
@@ -118,7 +119,10 @@ class RPRAuth:
             server_metadata_url=(
                 f"{app.config['OAUTH_BASE_URL']}/.well-known/openid-configuration"
             ),
-            client_kwargs={"scope": app.config["OAUTH_SCOPE"]},
+            client_kwargs={
+                "scope": app.config["OAUTH_SCOPE"],
+                "timeout": app.config["OAUTH_TIMEOUT"],
+            },
         )
 
         logger.info("RPR OAuth geïnitialiseerd (session-based)")
