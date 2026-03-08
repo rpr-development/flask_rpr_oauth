@@ -97,6 +97,18 @@ class OAuthUser:
         return self.oauth_id
 
     @property
+    def name(self):
+        """Display name: voornaam + first letter of achternaam."""
+        if self.achternaam:
+            return f"{self.voornaam} {self.achternaam[0]}."
+        return self.voornaam
+
+    @property
+    def username(self):
+        """Alias for name."""
+        return self.name
+
+    @property
     def is_authenticated(self):
         """Check if user is authenticated."""
         return True

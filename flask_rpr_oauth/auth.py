@@ -217,8 +217,9 @@ class RPRAuth:
             return redirect(next_page)
 
         except Exception as e:
-            logger.error(f"OAuth callback error: {e}")
-            raise OAuthError(f"Login mislukt: {str(e)}")
+            logger.error(f"OAuth callback error: {e}", exc_info=True)
+            session.clear()
+            return redirect(url_for("auth.login"))
 
     def _handle_logout(self):
         """Logout en clear session."""
