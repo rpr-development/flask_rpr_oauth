@@ -174,7 +174,10 @@ class RPRAuth:
 
             # Haal token op
             token = self.auth_server.authorize_access_token()
-            userinfo = self.auth_server.userinfo()
+            # Gebruik userinfo claims uit het ID token (al opgehaald door authorize_access_token).
+            # Dit voorkomt een extra HTTP round-trip naar de userinfo endpoint die Gunicorn
+            # worker timeouts kan veroorzaken als de auth server traag reageert.
+            userinfo = token.get("userinfo") or self.auth_server.userinfo()
 
             # Sla token op in session
             session["oauth_token"] = token
