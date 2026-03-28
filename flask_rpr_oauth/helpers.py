@@ -4,12 +4,16 @@ flask_rpr_oauth.helpers
 
 Helper functies voor het ophalen en cachen van userinfo via de OAuth server.
 Geschikt voor gebruik in zowel API (Bearer tokens) als session-based authenticatie.
+
+Token validatie volgorde:
+  1. /oauth/userinfo  — werkt voor user tokens (authorization_code flow)
+  2. /oauth/introspect — fallback voor M2M tokens (client_credentials flow),
+                         die 403 krijgen op userinfo
 """
 
 import logging
-from functools import wraps
 from typing import Dict, Tuple
-from flask import request, jsonify, current_app
+from flask import current_app
 import requests
 
 logger = logging.getLogger(__name__)
@@ -20,17 +24,18 @@ _userinfo_cache: Dict[str, Tuple[dict, float]] = {}
 
 def get_userinfo_from_token(token):
     """
-    Haal userinfo op via het /oauth/userinfo endpoint.
+    Haal userinfo op voor een access token.
 
-    Werkt voor zowel user tokens als M2M tokens.
+    Probeert eerst /oauth/userinfo (user tokens). Als de server 403 teruggeeft
+    (wat gebruikelijk is voor M2M client_credentials tokens), wordt
+    /oauth/introspect gebruikt als fallback.
 
     Args:
         token (str): Access token
 
     Returns:
-        dict: Userinfo response of None bij error
+        dict: Userinfo/introspection response of None bij error
     """
-    # Check cache
     if token in _userinfo_cache:
         logger.debug("Userinfo cache hit")
         return _userinfo_cache[token]
@@ -40,6 +45,7 @@ def get_userinfo_from_token(token):
         logger.error("OAUTH_BASE_URL not configured")
         return None
 
+    # Stap 1: probeer userinfo (werkt voor user tokens)
     try:
         response = requests.get(
             f"{oauth_base_url}/oauth/userinfo",
@@ -49,19 +55,72 @@ def get_userinfo_from_token(token):
 
         if response.status_code == 200:
             userinfo = response.json()
-            # Cache userinfo (simpele cache zonder expiry - productie zou Redis gebruiken)
             _userinfo_cache[token] = userinfo
             logger.debug(
                 f'Userinfo fetched - token_type: {userinfo.get("token_type")}, '
                 f'sub: {userinfo.get("sub")}, permissions: {len(userinfo.get("permissions", []))}'
             )
             return userinfo
-        else:
+
+        if response.status_code != 403:
             logger.warning(f"Userinfo request failed: {response.status_code}")
             return None
 
+        # 403 = token is geldig maar heeft geen userinfo toegang (M2M token)
+        logger.debug("Userinfo returned 403, falling back to token introspection")
+
     except Exception as e:
         logger.error(f"Userinfo request error: {e}")
+        return None
+
+    # Stap 2: introspection fallback voor M2M tokens
+    return _introspect_token(token, oauth_base_url)
+
+
+def _introspect_token(token: str, oauth_base_url: str) -> dict | None:
+    """
+    Valideer een token via het /oauth/introspect endpoint.
+
+    Gebruikt OAUTH_CLIENT_ID en OAUTH_CLIENT_SECRET als HTTP Basic Auth,
+    conform RFC 7662 (Token Introspection).
+
+    Returns:
+        dict met token claims inclusief 'token_type': 'm2m', of None bij error
+    """
+    client_id = current_app.config.get("OAUTH_CLIENT_ID")
+    client_secret = current_app.config.get("OAUTH_CLIENT_SECRET")
+
+    if not client_id or not client_secret:
+        logger.error("Token introspection vereist OAUTH_CLIENT_ID en OAUTH_CLIENT_SECRET")
+        return None
+
+    try:
+        response = requests.post(
+            f"{oauth_base_url}/oauth/introspect",
+            data={"token": token},
+            auth=(client_id, client_secret),
+            timeout=10,
+        )
+
+        if response.status_code != 200:
+            logger.warning(f"Token introspection failed: {response.status_code}")
+            return None
+
+        data = response.json()
+
+        if not data.get("active"):
+            logger.debug("Token introspection: token is not active")
+            return None
+
+        _userinfo_cache[token] = data
+        logger.debug(
+            f'Token introspected - token_type: {data.get("token_type")}, '
+            f'sub: {data.get("sub")}, permissions: {len(data.get("permissions", []))}'
+        )
+        return data
+
+    except Exception as e:
+        logger.error(f"Token introspection error: {e}")
         return None
 
 
