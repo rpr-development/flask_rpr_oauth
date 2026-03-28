@@ -21,6 +21,8 @@ from .decorators import (
     group_required,
     any_group_required,
     require_2fa,
+    m2m_only,
+    user_only,
 )
 from .models import OAuthUser, current_user, current_token
 from .exceptions import OAuthError, TokenExpiredError, PermissionDeniedError
@@ -41,6 +43,8 @@ __all__ = [
     "group_required",
     "any_group_required",
     "require_2fa",
+    "m2m_only",
+    "user_only",
     # Stateless helpers
     "get_userinfo_from_token",
     "clear_userinfo_cache",
