@@ -16,6 +16,30 @@ from .exceptions import PermissionDeniedError, GroupDeniedError
 logger = logging.getLogger(__name__)
 
 
+_BLOCKED_STATUSES = {
+    "REVIEW": "Je account is geblokkeerd. Neem zo snel mogelijk contact op met jouw teammanager voor een gesprek.",
+    "BANNED": "Je account is permanent non-actief gesteld. Neem contact op met jouw teammanager.",
+}
+
+
+def _check_user_status():
+    """
+    Controleer of de ingelogde gebruiker een geblokkeerde status heeft.
+
+    Returns:
+        Response | None: Een 403-response als de gebruiker geblokkeerd is, anders None.
+    """
+    status = session.get("oauth_user", {}).get("user_status", "")
+    message = _BLOCKED_STATUSES.get(status)
+    if message:
+        logger.warning(
+            f"Toegang geweigerd voor user {session.get('oauth_user', {}).get('oauth_id')} "
+            f"met status {status!r}"
+        )
+        return jsonify({"error": "account_blocked", "message": message}), 403
+    return None
+
+
 def _is_ajax_request():
     """Check if request is an AJAX/fetch request."""
     if request.headers.get("X-Requested-With") == "XMLHttpRequest":
@@ -89,6 +113,10 @@ def login_required(f):
             session.modified = True  # Forceer sessie-opslag in Redis/filesystem
             # Redirect to login
             return redirect(url_for("auth.login"))
+
+        blocked = _check_user_status()
+        if blocked:
+            return blocked
 
         return f(*args, **kwargs)
 
@@ -178,6 +206,10 @@ def permission_required(permission=None, **method_permissions):
             # Session-based (browser mode)
             if not current_user.is_authenticated:
                 abort(401)
+
+            blocked = _check_user_status()
+            if blocked:
+                return blocked
 
             if not hasattr(current_user, "has_permission"):
                 logger.error(f"User {current_user.get_id()} heeft geen has_permission method")
@@ -278,6 +310,10 @@ def any_permission_required(*permissions, **method_permissions):
             # Session-based (browser mode)
             if not current_user.is_authenticated:
                 abort(401)
+
+            blocked = _check_user_status()
+            if blocked:
+                return blocked
 
             if not hasattr(current_user, "has_any_permission"):
                 logger.error(f"User {current_user.get_id()} heeft geen has_any_permission method")
@@ -390,6 +426,10 @@ def group_required(group=None, **method_groups):
             # Session-based (browser mode)
             if not current_user.is_authenticated:
                 abort(401)
+
+            blocked = _check_user_status()
+            if blocked:
+                return blocked
 
             if not hasattr(current_user, "in_group"):
                 logger.error(f"User {current_user.get_id()} heeft geen in_group method")
@@ -504,6 +544,10 @@ def any_group_required(*groups, **method_groups):
             if not current_user.is_authenticated:
                 abort(401)
 
+            blocked = _check_user_status()
+            if blocked:
+                return blocked
+
             if not hasattr(current_user, "in_any_group"):
                 logger.error(f"User {current_user.get_id()} heeft geen in_any_group method")
                 abort(403)
@@ -553,6 +597,10 @@ def require_2fa(f):
             session["next"] = request.url
             session.modified = True  # Forceer sessie-opslag in Redis/filesystem
             return redirect(url_for("auth.login"))
+
+        blocked = _check_user_status()
+        if blocked:
+            return blocked
 
         # Haal RPRAuth instance op
         rpr_auth = current_app.extensions.get("rpr_auth")

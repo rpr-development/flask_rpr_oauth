@@ -115,8 +115,8 @@ class OAuthUser:
 
     @property
     def is_active(self):
-        """Check if user is active."""
-        return True
+        """Check if user is active (REVIEW en BANNED zijn geblokkeerd)."""
+        return self.user_status not in ("REVIEW", "BANNED")
 
     @property
     def is_anonymous(self):

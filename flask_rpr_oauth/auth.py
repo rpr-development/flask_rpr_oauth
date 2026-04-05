@@ -179,6 +179,19 @@ class RPRAuth:
             # worker timeouts kan veroorzaken als de auth server traag reageert.
             userinfo = token.get("userinfo") or self.auth_server.userinfo()
 
+            # Blokkeer REVIEW en BANNED gebruikers direct bij login (defense-in-depth)
+            user_status = userinfo.get("user_status", "")
+            if user_status in ("REVIEW", "BANNED"):
+                _blocked_messages = {
+                    "REVIEW": "Je account is geblokkeerd. Neem zo snel mogelijk contact op met jouw teammanager voor een gesprek.",
+                    "BANNED": "Je account is permanent non-actief gesteld. Neem contact op met jouw teammanager.",
+                }
+                logger.warning(
+                    f"Login geweigerd voor {userinfo.get('email')} met status {user_status!r}"
+                )
+                session["oauth_blocked_message"] = _blocked_messages[user_status]
+                return redirect(url_for("auth.login"))
+
             # Sla token op in session
             session["oauth_token"] = token
 
@@ -229,9 +242,39 @@ class RPRAuth:
             return redirect(url_for("auth.login"))
 
     def _handle_logout(self):
-        """Logout en clear session."""
+        """Logout: clear lokale session en initieer RP-Initiated Logout op de auth server."""
+        # Bewaar het ID token vóór session.clear() voor de id_token_hint
+        token = session.get("oauth_token", {})
+        id_token = token.get("id_token")
+
         session.clear()
-        logger.info("User uitgelogd")
+        logger.info("User uitgelogd (lokale sessie gecleard)")
+
+        # RP-Initiated Logout (OpenID Connect): stuur gebruiker naar end_session_endpoint
+        # zodat de auth server de sessie daar ook invalideert.
+        try:
+            metadata = self.auth_server.load_server_metadata()
+            end_session_endpoint = metadata.get("end_session_endpoint")
+        except Exception as e:
+            logger.warning(f"Kon server metadata niet laden voor logout: {e}")
+            end_session_endpoint = None
+
+        if end_session_endpoint:
+            post_logout_redirect_uri = current_app.config.get("OAUTH_POST_LOGOUT_REDIRECT_URI")
+            params = {}
+            if id_token:
+                params["id_token_hint"] = id_token
+            if post_logout_redirect_uri:
+                params["post_logout_redirect_uri"] = post_logout_redirect_uri
+
+            if params:
+                from urllib.parse import urlencode
+                end_session_endpoint = f"{end_session_endpoint}?{urlencode(params)}"
+
+            logger.info(f"Redirect naar end_session_endpoint: {end_session_endpoint}")
+            return redirect(end_session_endpoint)
+
+        # Fallback als auth server geen end_session_endpoint heeft
         return redirect(url_for("index"))
 
     def _handle_refresh(self):
