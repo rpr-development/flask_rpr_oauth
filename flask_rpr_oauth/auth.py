@@ -7,7 +7,8 @@ Hoofd OAuth authenticatie class.
 
 import logging
 import requests
-from flask import Blueprint, redirect, url_for, session, request, jsonify, current_app
+from flask import Blueprint, redirect, url_for, session, request, jsonify, current_app, make_response
+from markupsafe import escape
 from authlib.integrations.flask_client import OAuth
 from .models import OAuthUser, current_user
 from .exceptions import OAuthError, TokenExpiredError
@@ -34,6 +35,28 @@ except ImportError:
 
 
 logger = logging.getLogger(__name__)
+
+
+def _post_logout_form(action: str, params: dict):
+    """
+    Render een auto-submitting HTML POST form voor RP-Initiated Logout.
+
+    Gebruikt POST in plaats van GET redirect zodat grote JWTs (id_token_hint)
+    in de request body blijven en de URL-lengtelimiet van de server niet overschrijden.
+    """
+    fields = ''.join(
+        f'<input type="hidden" name="{escape(k)}" value="{escape(v)}">'
+        for k, v in params.items()
+    )
+    html = (
+        '<!DOCTYPE html><html><head><title>Uitloggen...</title></head><body>'
+        f'<form id="f" method="post" action="{escape(action)}">{fields}</form>'
+        '<script>document.getElementById("f").submit();</script>'
+        '</body></html>'
+    )
+    response = make_response(html)
+    response.headers['Content-Type'] = 'text/html; charset=utf-8'
+    return response
 
 
 class RPRAuth:
@@ -268,8 +291,10 @@ class RPRAuth:
                 params["post_logout_redirect_uri"] = post_logout_redirect_uri
 
             if params:
-                from urllib.parse import urlencode
-                end_session_endpoint = f"{end_session_endpoint}?{urlencode(params)}"
+                # Gebruik POST form submission: id_token_hint kan te groot zijn voor een GET URL
+                # (JWT bevat alle claims → snel >4 KB). POST houdt de token in de body.
+                logger.info(f"RP-Initiated Logout via POST naar: {end_session_endpoint}")
+                return _post_logout_form(end_session_endpoint, params)
 
             logger.info(f"Redirect naar end_session_endpoint: {end_session_endpoint}")
             return redirect(end_session_endpoint)
