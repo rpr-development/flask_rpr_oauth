@@ -87,6 +87,16 @@ class OAuthUser:
         self._groups = groups or []
         self.claims = claims or {}
 
+    @property
+    def type(self):
+        """Alias for user_type."""
+        return self.user_type
+
+    @property
+    def status(self):
+        """Alias for user_status."""
+        return self.user_status
+
     def get_id(self):
         """Return unique identifier."""
         return self.oauth_id
@@ -107,6 +117,12 @@ class OAuthUser:
     def username(self):
         """Alias for name."""
         return self.name
+
+    @property
+    def full_name(self):
+        """Full name: voornaam + name_prefix (indien aanwezig) + achternaam."""
+        parts = [self.voornaam, self.name_prefix, self.achternaam]
+        return " ".join(p for p in parts if p)
 
     @property
     def is_authenticated(self):
