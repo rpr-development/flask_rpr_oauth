@@ -222,8 +222,8 @@ class RPRAuth:
             session["oauth_user"] = {
                 "oauth_id": userinfo["sub"],
                 "email": userinfo.get("email", ""),
-                "voornaam": userinfo.get("given_name", ""),
-                "achternaam": userinfo.get("family_name", ""),
+                "voornaam": userinfo.get("given_name", "") or userinfo.get("firstname", ""),
+                "achternaam": userinfo.get("family_name", "") or userinfo.get("lastname", ""),
                 "teamspeak_id": userinfo.get("teamspeak_id", ""),
                 "discord_id": userinfo.get("discord_id", ""),
                 "ingame_phone": userinfo.get("ingame_phone", ""),
