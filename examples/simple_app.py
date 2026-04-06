@@ -5,16 +5,18 @@ Simple Example App
 Basis voorbeeld van Flask RPR OAuth gebruik.
 """
 
+import os
+
 from flask import Flask, render_template_string
 from flask_rpr_oauth import RPRAuth, login_required, permission_required, current_user
 
 app = Flask(__name__)
 
 # Configuratie
-app.config["SECRET_KEY"] = "your-secret-key-here"
+app.config["SECRET_KEY"] = os.environ["SECRET_KEY"]
 app.config["OAUTH_BASE_URL"] = "https://auth.roleplayreality.nl"
-app.config["OAUTH_CLIENT_ID"] = "your-client-id"
-app.config["OAUTH_CLIENT_SECRET"] = "your-client-secret"
+app.config["OAUTH_CLIENT_ID"] = os.environ["OAUTH_CLIENT_ID"]
+app.config["OAUTH_CLIENT_SECRET"] = os.environ["OAUTH_CLIENT_SECRET"]
 app.config["OAUTH_REDIRECT_URI"] = "http://localhost:5000/auth/callback"
 
 # Initialiseer OAuth

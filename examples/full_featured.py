@@ -5,6 +5,8 @@ Full Featured Example
 Volledig voorbeeld met alle features van Flask RPR OAuth.
 """
 
+import os
+
 from flask import Flask, render_template_string, session
 from flask_session import Session
 import redis
@@ -21,12 +23,12 @@ from flask_rpr_oauth import (
 app = Flask(__name__)
 
 # Basis configuratie
-app.config["SECRET_KEY"] = "your-secret-key-here"
+app.config["SECRET_KEY"] = os.environ["SECRET_KEY"]
 
 # OAuth configuratie
 app.config["OAUTH_BASE_URL"] = "https://auth.roleplayreality.nl"
-app.config["OAUTH_CLIENT_ID"] = "your-client-id"
-app.config["OAUTH_CLIENT_SECRET"] = "your-client-secret"
+app.config["OAUTH_CLIENT_ID"] = os.environ["OAUTH_CLIENT_ID"]
+app.config["OAUTH_CLIENT_SECRET"] = os.environ["OAUTH_CLIENT_SECRET"]
 app.config["OAUTH_REDIRECT_URI"] = "http://localhost:5000/auth/callback"
 app.config["OAUTH_SCOPE"] = "openid profile email"
 app.config["OAUTH_AUTO_VALIDATE"] = True
@@ -39,7 +41,7 @@ app.config["SESSION_KEY_PREFIX"] = "myapp:"
 app.config["SESSION_REDIS"] = redis.from_url("redis://localhost:6379/0")
 
 # Webhook configuratie
-app.config["WEBHOOK_SECRET"] = "your-webhook-secret"
+app.config["WEBHOOK_SECRET"] = os.environ["WEBHOOK_SECRET"]
 
 # Initialiseer session
 Session(app)

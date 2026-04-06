@@ -4,6 +4,8 @@ Voorbeeld van 2FA (Two-Factor Authentication) gebruik met flask-rpr-oauth.
 Dit voorbeeld toont hoe je endpoints kunt beveiligen met 2FA validatie.
 """
 
+import os
+
 from flask import Flask, jsonify, render_template_string
 from flask_rpr_oauth import RPRAuth, login_required, require_2fa, current_user
 
@@ -11,10 +13,10 @@ app = Flask(__name__)
 
 # Configuratie
 app.config.update(
-    SECRET_KEY="your-secret-key-change-in-production",
+    SECRET_KEY=os.environ["SECRET_KEY"],
     OAUTH_BASE_URL="https://auth.roleplayreality.nl",
-    OAUTH_CLIENT_ID="your-client-id",
-    OAUTH_CLIENT_SECRET="your-client-secret",
+    OAUTH_CLIENT_ID=os.environ["OAUTH_CLIENT_ID"],
+    OAUTH_CLIENT_SECRET=os.environ["OAUTH_CLIENT_SECRET"],
     OAUTH_REDIRECT_URI="http://localhost:5000/auth/callback",
     OAUTH_SCOPE="openid profile email",
 )

@@ -6,6 +6,8 @@ Deze API ondersteunt BEIDE:
 2. M2M tokens (client_credentials flow) - voor server-to-server
 """
 
+import os
+
 from flask import Flask, jsonify, request
 from flask_rpr_oauth import (
     permission_required,
@@ -19,7 +21,7 @@ app = Flask(__name__)
 
 # Configuratie
 app.config["OAUTH_BASE_URL"] = "https://auth.roleplayreality.nl"
-app.config["SECRET_KEY"] = "your-secret-key"
+app.config["SECRET_KEY"] = os.environ["SECRET_KEY"]
 
 # ============================================
 # ENDPOINTS VOOR BEIDE TOKEN TYPES

@@ -29,9 +29,9 @@ setup(
     python_requires=">=3.8",
     setup_requires=["setuptools_scm"],
     install_requires=[
-        "Flask>=2.0.0",
-        "Authlib>=1.0.0",
-        "requests>=2.28.0",
+        "Flask>=3.1.3",
+        "Authlib>=1.6.9",
+        "requests>=2.33.0",
     ],
     extras_require={
         "redis": [
