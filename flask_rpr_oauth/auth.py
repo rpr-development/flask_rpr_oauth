@@ -547,31 +547,74 @@ class RPRAuth:
 
     def require_2fa_reauth(self):
         """
-        Forceer authenticatie met 2FA via OAuth.
+        Forceer verse 2FA-verificatie via OAuth.
 
-        Deze methode start een nieuwe OAuth flow met acr_values=mfa om
-        de gebruiker te dwingen 2FA te voltooien. Zonder prompt=login
-        hoeft de gebruiker niet opnieuw in te loggen als ze al een
-        actieve sessie hebben bij de auth server — ze worden alleen
-        naar 2FA doorgestuurd als dat nog niet gedaan is.
+        Stuurt de gebruiker naar de auth server met acr_values=mfa en prompt=login.
+        prompt=login zorgt ervoor dat de auth server de bestaande 2fa_verified-status
+        wist, ook als die al gezet was tijdens het inloggen. De auth server herkent
+        dat de gebruiker al ingelogd is en toont alleen het 2FA-scherm (geen wachtwoord).
 
         Returns:
             Flask redirect response naar OAuth authorize endpoint
         """
         redirect_uri = current_app.config["OAUTH_REDIRECT_URI"]
 
-        # Start OAuth flow met 2FA requirement (acr_values=mfa)
-        # Geen prompt=login: de auth server bepaalt zelf of de gebruiker
-        # al ingelogd is en alleen 2FA nog moet doen.
         response = self.auth_server.authorize_redirect(
             redirect_uri,
-            acr_values="mfa",  # Vereist multi-factor authenticatie
+            acr_values="mfa",
+            prompt="login",  # Wis 2fa_verified op auth server → altijd verse 2FA
         )
-        # Authlib slaat de state op in session; zorg dat Flask-Session dit persisteert
         session.modified = True
         state_keys = [k for k in session.keys() if k.startswith('_state_')]
         logger.info(f"[require_2fa_reauth] state_keys_in_session={state_keys}")
         return response
+
+    def require_fresh_2fa(self, session_key: str = "_fresh_2fa_granted"):
+        """
+        Vereist een verse 2FA-verificatie specifiek voor een gevoelige actie.
+
+        Anders dan validate_2fa() accepteert deze methode geen 2FA die al gedaan
+        is tijdens het inloggen. De gebruiker moet expliciet 2FA voltooien voor
+        deze specifieke actie (bijv. admin-toegang).
+
+        Gebruik in een before_request:
+
+            result = rpr_auth.require_fresh_2fa('_admin_2fa_granted')
+            if result:
+                return result
+
+        De session_key wordt automatisch gewist bij uitloggen (session.clear()).
+
+        Args:
+            session_key: Sleutel in de Flask-session om de status bij te houden.
+
+        Returns:
+            None als 2FA al is voltooid voor deze actie.
+            Flask redirect response als 2FA (nog) vereist is.
+        """
+        # Al geautoriseerd in deze sessie voor deze actie
+        if session.get(session_key, False):
+            return None
+
+        # Teruggekeerd van reauth — controleer of 2FA daadwerkelijk is voltooid
+        pending_key = f"{session_key}_pending"
+        if session.pop(pending_key, False):
+            if self.validate_2fa():
+                session[session_key] = True
+                session.modified = True
+                logger.info(f"[require_fresh_2fa] 2FA gevalideerd, {session_key}=True")
+                return None
+            else:
+                logger.warning(f"[require_fresh_2fa] Terug van reauth maar 2FA niet gevalideerd")
+                return None  # Aanroeper handelt de foutmelding af
+
+        # Eerste keer: stuur naar 2FA
+        from flask import request as flask_request
+        session[pending_key] = True
+        session["next"] = flask_request.url
+        session.modified = True
+        logger.info(f"[require_fresh_2fa] Verse 2FA vereist ({session_key}), starten reauth")
+        return self.require_2fa_reauth()
 
 
 __all__ = ["RPRAuth"]
