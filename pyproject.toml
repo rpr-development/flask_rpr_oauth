@@ -34,7 +34,7 @@ dependencies = [
 
 [project.optional-dependencies]
 redis = [
-    "redis>=4.0.0",
+    "redis>=7.0.1",
     "Flask-Session>=0.5.0",
 ]
 dev = [
