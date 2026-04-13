@@ -44,7 +44,7 @@ dev = [
     "flake8>=5.0.0",
     "mypy>=0.990",
     "bandit>=1.7.0",
-    "build>=0.10.0",
+    "build>=1.4.3",
 ]
 
 [project.urls]
