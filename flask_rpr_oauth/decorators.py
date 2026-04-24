@@ -585,9 +585,12 @@ def require_2fa(f):
             return 'Admin Dashboard - 2FA required'
 
     Note:
-        Deze decorator checkt eerst de session (snel), en valideert daarna
-        met de auth server indien nodig. Als 2FA ontbreekt, wordt de gebruiker
-        doorgestuurd naar een nieuwe OAuth flow met 2FA requirement.
+        - Passkey-inlog (`acr="phr"`) voldoet automatisch — geen extra 2FA gevraagd.
+        - 2FA gedaan bij een andere app op dezelfde auth server voldoet ook (sessie
+          wordt hergebruikt via OIDC step-up, geen opnieuw inloggen).
+        - Checkt eerst de session (snel); valideert bij de auth server indien nodig.
+        - Stuur nooit `prompt=login` via `require_2fa_reauth()` voor gewone routes:
+          dat wist de auth server-sessie. Gebruik `require_fresh_2fa()` daarvoor.
     """
 
     @wraps(f)

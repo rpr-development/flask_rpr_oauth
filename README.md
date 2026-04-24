@@ -319,8 +319,11 @@ def sensitive_data():
 De `@require_2fa` decorator:
 
 - Checkt of gebruiker is ingelogd
-- Valideert 2FA status bij auth server
-- Redirect automatisch naar auth server als 2FA niet is voltooid
+- Valideert `acr`-claim in session (`"mfa"` of `"phr"` = voldaan)
+- Passkey-inlog (`acr="phr"`) voldoet automatisch — geen extra 2FA prompt
+- 2FA gedaan bij een andere app op dezelfde auth server voldoet ook
+- Redirect naar auth server met `acr_values=mfa` als 2FA ontbreekt (step-up)
+- Auth server toont alleen het 2FA-scherm, geen wachtwoord opnieuw vragen
 - Redirect terug naar originele URL na 2FA voltooiing
 
 ## Two-Factor Authentication (2FA)
@@ -342,13 +345,18 @@ def profile():
 
 ### 2FA Validatie Flow
 
-1. User logt in via OAuth
-2. Token bevat `twofa_validated` status
+1. User logt in via OAuth (eventueel zonder 2FA)
+2. Token bevat `acr`-claim (`"pwd"`, `"mfa"` of `"phr"`) en `twofa_validated` status
 3. Status wordt opgeslagen in session
-4. `@require_2fa` decorator checkt status
-5. Bij ontbrekende 2FA: redirect naar `https://auth.example.com/?2fa_needed=true&next={url}`
-6. User voltooit 2FA op auth server
-7. Na 2FA: redirect terug naar originele URL met geüpdatete token
+4. `@require_2fa` decorator checkt de `acr`-claim in de session
+5. Bij ontbrekende 2FA: OIDC step-up redirect naar auth server met `acr_values=mfa`
+   - Auth server controleert de **bestaande sessie** op de auth server:
+     - Passkey-inlog (`auth_method=passkey`) → voldoet direct, geen extra stap
+     - Al eerder 2FA gedaan (ook bij een andere app) → voldoet direct
+     - Nog geen 2FA → auth server toont uitsluitend het 2FA-scherm (geen wachtwoord opnieuw)
+6. User voltooit 2FA op auth server (indien nodig)
+7. Na 2FA: redirect terug naar app callback met nieuw token (`acr="mfa"` of `"phr"`)
+8. Redirect naar de originele beveiligde URL
 
 ### Handmatige 2FA Check
 
@@ -373,7 +381,7 @@ def force_2fa():
     return rpr_auth.require_2fa_reauth()
 ```
 
-**Note:** De `require_2fa_reauth()` methode start een nieuwe OAuth flow met `acr_values=mfa` en `prompt=login`, wat de gebruiker dwingt om opnieuw in te loggen met 2FA.
+**Note:** De `require_2fa_reauth()` methode start een OIDC step-up OAuth flow met `acr_values=mfa`. De auth server controleert de bestaande sessie: passkey of al eerder 2FA gedaan voldoen direct zonder extra prompt. Alleen als 2FA nog ontbreekt toont de auth server het 2FA-scherm. Gebruik `require_fresh_2fa()` als je altijd verse 2FA wil afdwingen (bijv. voor gevoelige handelingen).
 
 ## OAuth in iFrame Context (CHIPS Support)
 
@@ -638,8 +646,10 @@ current_user.get_groups()                              # Get groups list
 rpr_auth = app.extensions['rpr_auth']
 
 rpr_auth.validate_token()                    # Valideer access token
-rpr_auth.validate_2fa()                      # Valideer 2FA status
-rpr_auth.require_2fa_reauth()                # Start nieuwe OAuth flow met 2FA requirement
+rpr_auth.validate_2fa()                      # Valideer 2FA status (acr=mfa/phr)
+rpr_auth.require_2fa_reauth()                # OIDC step-up: acr_values=mfa (bestaande 2FA/passkey voldoet)
+rpr_auth.require_2fa_reauth(force_fresh=True) # Forceer verse 2FA (prompt=login, voor gevoelige acties)
+rpr_auth.require_fresh_2fa('_key')           # Verse 2FA voor specifieke actie (per session_key)
 ```
 
 ## Development

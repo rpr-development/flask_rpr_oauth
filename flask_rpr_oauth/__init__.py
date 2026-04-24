@@ -2,10 +2,10 @@
 Flask RPR OAuth
 ~~~~~~~~~~~~~~~
 
-Een Flask extensie voor OAuth 2.0 / OpenID Connect authenticatie met de Roleplay Reality Auth Server.
+A Flask extension for OAuth 2.0 / OpenID Connect authentication with the Roleplay Reality Auth Server.
 
 :copyright: (c) 2025 by Roleplay Reality.
-:license: MIT, see LICENSE for more details.
+:license: Proprietary, see LICENSE for more details.
 """
 
 try:
@@ -25,7 +25,7 @@ from .decorators import (
     user_only,
 )
 from .models import OAuthUser, current_user, current_token
-from .exceptions import OAuthError, TokenExpiredError, PermissionDeniedError
+from .exceptions import OAuthError, TokenExpiredError, PermissionDeniedError, GroupDeniedError
 from .helpers import (
     get_userinfo_from_token,
     clear_userinfo_cache,
@@ -52,4 +52,5 @@ __all__ = [
     "OAuthError",
     "TokenExpiredError",
     "PermissionDeniedError",
+    "GroupDeniedError",
 ]

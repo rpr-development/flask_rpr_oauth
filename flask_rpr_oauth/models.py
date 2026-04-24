@@ -2,7 +2,7 @@
 flask_rpr_oauth.models
 ~~~~~~~~~~~~~~~~~~~~~~
 
-User model voor OAuth authenticatie.
+User model for OAuth authentication.
 """
 
 from typing import Optional
@@ -11,9 +11,9 @@ from flask import g, session
 
 class OAuthUser:
     """
-    User model voor OAuth authenticated users.
+    User model for OAuth authenticated users.
 
-    Users worden opgeslagen in Flask session.
+    Users are stored in the Flask session.
 
     Attributes:
         oauth_id (str): OAuth subject (sub) identifier
@@ -108,7 +108,7 @@ class OAuthUser:
 
     @property
     def name(self):
-        """Display name: voornaam + first letter of achternaam."""
+        """Display name: first name + first letter of last name."""
         if self.achternaam:
             return f"{self.voornaam} {self.achternaam[0]}."
         return self.voornaam
@@ -120,7 +120,7 @@ class OAuthUser:
 
     @property
     def full_name(self):
-        """Full name: voornaam + name_prefix (indien aanwezig) + achternaam."""
+        """Full name: first name + name_prefix (if set) + last name."""
         parts = [self.voornaam, self.name_prefix, self.achternaam]
         return " ".join(p for p in parts if p)
 
@@ -131,7 +131,7 @@ class OAuthUser:
 
     @property
     def is_active(self):
-        """Check if user is active (REVIEW en BANNED zijn geblokkeerd)."""
+        """Check if user is active. REVIEW and BANNED statuses block access."""
         return self.user_status not in ("REVIEW", "BANNED")
 
     @property
@@ -143,6 +143,9 @@ class OAuthUser:
     def twofa_validated(self):
         """
         Check if user has completed 2FA.
+
+        True als de ACR-claim `"mfa"` (TOTP) of `"phr"` (passkey/WebAuthn) was
+        bij de laatste OAuth login of step-up. Wordt gezet door `_handle_callback`.
 
         Returns:
             bool: True if 2FA is validated

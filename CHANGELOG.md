@@ -18,6 +18,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Improved pre-deploy scripts with more comprehensive checks
 
+### Fixed
+
+- `require_2fa_reauth()` stuurde onterecht `prompt=login` mee bij normale step-up authenticatie.
+  Dit wiste de bestaande `2fa_verified`-sessie op de auth server, waardoor gebruikers die al 2FA
+  hadden gedaan (bij een andere app) of ingelogd waren met een passkey toch opnieuw 2FA moesten
+  doorlopen. De methode gebruikt nu correcte OIDC step-up authenticatie (`acr_values=mfa` zonder
+  `prompt`), zodat bestaande 2FA-sessies en passkey-inlogs (`acr=phr`) automatisch worden
+  geaccepteerd zonder extra prompten.
+- `require_fresh_2fa()` krijgt nu expliciet `force_fresh=True` mee zodat het gedrag (altijd verse
+  2FA afdwingen voor gevoelige handelingen) ongewijzigd blijft.
+
 ## [1.0.0] - 2025-11-25
 
 ### Added

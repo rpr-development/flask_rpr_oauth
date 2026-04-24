@@ -182,7 +182,13 @@ class RPRAuth:
 
     @csrf_exempt
     def _handle_callback(self):
-        """OAuth callback handler."""
+        """
+        OAuth callback handler: wisselt de authorization code in voor tokens.
+
+        Slaat userinfo, permissions, groups en de ACR-claim op in de session.
+        Blokkeert gebruikers met status REVIEW of BANNED direct bij login.
+        Redirect naar de URL in session['next'] of naar 'index' na succesvolle login.
+        """
         try:
             # Debug: log session keys and incoming state for mismatching_state diagnosis
             incoming_state = request.args.get('state', '')
@@ -478,11 +484,12 @@ class RPRAuth:
         """
         Valideer 2FA status van huidige user.
 
-        Checkt de ACR claim en twofa_validated status uit de session
-        en userinfo endpoint.
+        Checkt de ACR claim uit de session. Zowel `acr="mfa"` (TOTP) als
+        `acr="phr"` (passkey/WebAuthn) worden geaccepteerd. Als de session
+        geen bevestiging geeft, wordt het userinfo endpoint geraadpleegd.
 
         Returns:
-            bool: True als 2FA is gevalideerd
+            bool: True als 2FA is gevalideerd (acr in ["mfa", "phr"])
         """
         # Check session first (fastest)
         acr = session.get("acr", "pwd")
@@ -545,28 +552,37 @@ class RPRAuth:
             logger.error(f"2FA validation error: {e}")
             return False
 
-    def require_2fa_reauth(self):
+    def require_2fa_reauth(self, force_fresh: bool = False):
         """
-        Forceer verse 2FA-verificatie via OAuth.
+        Start OIDC step-up authenticatie: vereist dat de gebruiker 2FA heeft voltooid.
 
-        Stuurt de gebruiker naar de auth server met acr_values=mfa en prompt=login.
-        prompt=login zorgt ervoor dat de auth server de bestaande 2fa_verified-status
-        wist, ook als die al gezet was tijdens het inloggen. De auth server herkent
-        dat de gebruiker al ingelogd is en toont alleen het 2FA-scherm (geen wachtwoord).
+        Stuurt de gebruiker naar de auth server met acr_values=mfa. De auth server
+        controleert de bestaande sessie:
+        - Passkey-inlog (acr=phr) → voldoet direct, geen extra prompt
+        - Al eerder 2FA gedaan (ook voor een andere app) → voldoet direct
+        - Nog geen 2FA → auth server toont uitsluitend het 2FA-scherm (geen wachtwoord opnieuw)
+
+        Args:
+            force_fresh: Stuur prompt=login mee zodat de auth server de bestaande
+                         2fa_verified-status wist en altijd verse 2FA vraagt. Gebruik
+                         dit alleen voor gevoelige handelingen (via require_fresh_2fa),
+                         niet voor gewone @require_2fa routes.
 
         Returns:
             Flask redirect response naar OAuth authorize endpoint
         """
         redirect_uri = current_app.config["OAUTH_REDIRECT_URI"]
 
-        response = self.auth_server.authorize_redirect(
-            redirect_uri,
-            acr_values="mfa",
-            prompt="login",  # Wis 2fa_verified op auth server → altijd verse 2FA
-        )
+        kwargs = {"acr_values": "mfa"}
+        if force_fresh:
+            # prompt=login wist 2fa_verified op de auth server zodat de gebruiker
+            # altijd opnieuw 2FA doorloopt, ongeacht een bestaande sessie.
+            kwargs["prompt"] = "login"
+
+        response = self.auth_server.authorize_redirect(redirect_uri, **kwargs)
         session.modified = True
         state_keys = [k for k in session.keys() if k.startswith('_state_')]
-        logger.info(f"[require_2fa_reauth] state_keys_in_session={state_keys}")
+        logger.info(f"[require_2fa_reauth] force_fresh={force_fresh} state_keys_in_session={state_keys}")
         return response
 
     def require_fresh_2fa(self, session_key: str = "_fresh_2fa_granted"):
@@ -608,13 +624,13 @@ class RPRAuth:
                 logger.warning(f"[require_fresh_2fa] Terug van reauth maar 2FA niet gevalideerd")
                 return None  # Aanroeper handelt de foutmelding af
 
-        # Eerste keer: stuur naar 2FA
+        # Eerste keer: stuur naar 2FA en dwing verse verificatie af
         from flask import request as flask_request
         session[pending_key] = True
         session["next"] = flask_request.url
         session.modified = True
         logger.info(f"[require_fresh_2fa] Verse 2FA vereist ({session_key}), starten reauth")
-        return self.require_2fa_reauth()
+        return self.require_2fa_reauth(force_fresh=True)
 
 
 __all__ = ["RPRAuth"]

@@ -2,12 +2,12 @@
 flask_rpr_oauth.exceptions
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Custom exceptions voor Flask RPR OAuth.
+Custom exceptions for Flask RPR OAuth.
 """
 
 
 class OAuthError(Exception):
-    """Base exception voor OAuth errors."""
+    """Base exception for OAuth errors."""
 
     def __init__(self, message, status_code=401):
         self.message = message
@@ -16,14 +16,14 @@ class OAuthError(Exception):
 
 
 class TokenExpiredError(OAuthError):
-    """Exception voor verlopen tokens."""
+    """Exception for expired tokens."""
 
     def __init__(self, message="Token is verlopen"):
         super().__init__(message, status_code=401)
 
 
 class PermissionDeniedError(OAuthError):
-    """Exception voor ontbrekende permissions."""
+    """Exception for missing permissions."""
 
     def __init__(self, message="Onvoldoende rechten", permission=None):
         self.permission = permission
@@ -33,7 +33,7 @@ class PermissionDeniedError(OAuthError):
 
 
 class GroupDeniedError(OAuthError):
-    """Exception voor ontbrekende groep membership."""
+    """Exception for missing group membership."""
 
     def __init__(self, message="Niet in vereiste groep", group=None):
         self.group = group
@@ -43,7 +43,7 @@ class GroupDeniedError(OAuthError):
 
 
 class InvalidTokenError(OAuthError):
-    """Exception voor ongeldige tokens."""
+    """Exception for invalid tokens."""
 
     def __init__(self, message="Token is ongeldig"):
         super().__init__(message, status_code=401)
