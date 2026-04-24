@@ -144,8 +144,8 @@ class OAuthUser:
         """
         Check if user has completed 2FA.
 
-        True als de ACR-claim `"mfa"` (TOTP) of `"phr"` (passkey/WebAuthn) was
-        bij de laatste OAuth login of step-up. Wordt gezet door `_handle_callback`.
+        True if the ACR claim was `"mfa"` (TOTP) or `"phr"` (passkey/WebAuthn)
+        during the last OAuth login or step-up. Set by `_handle_callback`.
 
         Returns:
             bool: True if 2FA is validated
@@ -225,7 +225,7 @@ class OAuthUser:
 
 class _CurrentUserProxy:
     """
-    Proxy voor current_user die de user uit de session haalt.
+    Proxy for current_user that reads the authenticated user from the session.
     """
 
     def _get_user(self) -> Optional[OAuthUser]:
@@ -300,10 +300,10 @@ current_user = _CurrentUserProxy()
 
 class _CurrentTokenProxy:
     """
-    Proxy voor de huidige API token info (Bearer token userinfo).
+    Proxy for the current API token info (Bearer token userinfo).
 
-    Werkt net als current_user, maar dan voor API requests met Bearer tokens.
-    De decorators slaan de token info op in flask.g, deze proxy leest het daaruit.
+    Works like current_user but for API requests using Bearer tokens.
+    Decorators store the token info in flask.g; this proxy reads from there.
 
     Usage:
         from flask_rpr_oauth import current_token

@@ -2,7 +2,7 @@
 flask_rpr_oauth.auth
 ~~~~~~~~~~~~~~~~~~~~
 
-Hoofd OAuth authenticatie class.
+Main OAuth authentication class.
 """
 
 import logging
@@ -61,10 +61,10 @@ def _post_logout_form(action: str, params: dict):
 
 class RPRAuth:
     """
-    Hoofd class voor RPR OAuth integratie.
+    Main class for RPR OAuth integration.
 
-    Deze class initialiseert OAuth 2.0 / OpenID Connect authenticatie met
-    de Roleplay Reality Auth Server en registreert alle benodigde routes.
+    Initialises OAuth 2.0 / OpenID Connect authentication with the
+    Roleplay Reality Auth Server and registers all required routes.
     """
 
     def __init__(
@@ -76,8 +76,8 @@ class RPRAuth:
         Args:
             app: Flask application instance
             user_class: Custom user class (moet OAuthUser extenden)
-            login_view: View naam voor login redirect
-            auto_register_routes: Automatisch auth routes registreren
+            login_view: View name for login redirect
+            auto_register_routes: Automatically register auth routes
         """
         self.user_class = user_class
         self.login_view = login_view
@@ -90,7 +90,7 @@ class RPRAuth:
 
     def init_app(self, app):
         """
-        Initialize extensie met Flask app.
+        Initialize extension with Flask app.
 
         Args:
             app: Flask application instance
@@ -183,11 +183,11 @@ class RPRAuth:
     @csrf_exempt
     def _handle_callback(self):
         """
-        OAuth callback handler: wisselt de authorization code in voor tokens.
+        OAuth callback handler: exchanges the authorization code for tokens.
 
-        Slaat userinfo, permissions, groups en de ACR-claim op in de session.
-        Blokkeert gebruikers met status REVIEW of BANNED direct bij login.
-        Redirect naar de URL in session['next'] of naar 'index' na succesvolle login.
+        Stores userinfo, permissions, groups and the ACR claim in the session.
+        Blocks users with status REVIEW or BANNED immediately at login.
+        Redirects to session['next'] or 'index' after a successful login.
         """
         try:
             # Debug: log session keys and incoming state for mismatching_state diagnosis
@@ -271,7 +271,7 @@ class RPRAuth:
             return redirect(url_for("auth.login"))
 
     def _handle_logout(self):
-        """Logout: clear lokale session en initieer RP-Initiated Logout op de auth server."""
+        """Logout: clear local session and initiate RP-Initiated Logout on the auth server."""
         # Bewaar het ID token vóór session.clear() voor de id_token_hint
         token = session.get("oauth_token", {})
         id_token = token.get("id_token")
@@ -335,7 +335,7 @@ class RPRAuth:
         return None
 
     def _handle_webhook_token_revoked(self):
-        """Webhook voor token revocation."""
+        """Webhook for token revocation."""
         error_response = self._verify_webhook_secret()
         if error_response:
             return error_response
@@ -350,7 +350,7 @@ class RPRAuth:
         return jsonify({"status": "success"})
 
     def _handle_webhook_user_deleted(self):
-        """Webhook voor user deletion."""
+        """Webhook for user deletion."""
         error_response = self._verify_webhook_secret()
         if error_response:
             return error_response
@@ -366,7 +366,7 @@ class RPRAuth:
 
     def _register_routes(self, app):
         """
-        Registreer auth Blueprint met routes.
+        Register auth Blueprint with routes.
 
         Args:
             app: Flask application instance
@@ -395,12 +395,12 @@ class RPRAuth:
 
     def _register_partitioned_cookie_handler(self, app):
         """
-        Registreer after_request hook voor Partitioned cookie support.
+        Register after_request hook for Partitioned cookie support.
 
-        Voegt het Partitioned attribuut toe aan sessie cookies om CHIPS
-        (Cookies Having Independent Partitioned State) te ondersteunen.
-        Dit is nodig voor OAuth flows in iframe context (bijv. FiveM NUI)
-        waar third-party cookies anders geblokkeerd worden.
+        Adds the Partitioned attribute to session cookies to support CHIPS
+        (Cookies Having Independent Partitioned State). Required for OAuth
+        flows in iframe contexts (e.g. FiveM NUI) where third-party cookies
+        would otherwise be blocked.
 
         Args:
             app: Flask application instance
@@ -408,7 +408,7 @@ class RPRAuth:
 
         @app.after_request
         def add_partitioned_cookie(response):
-            """Voeg Partitioned attribuut toe aan sessie cookies."""
+            """Add Partitioned attribute to session cookies."""
             set_cookie_headers = response.headers.getlist("Set-Cookie")
             if set_cookie_headers:
                 new_cookies = []
@@ -433,7 +433,7 @@ class RPRAuth:
 
     def _register_error_handlers(self, app):
         """
-        Registreer error handlers.
+        Register error handlers.
 
         Args:
             app: Flask application instance
@@ -452,10 +452,10 @@ class RPRAuth:
 
     def validate_token(self):
         """
-        Valideer huidige access token.
+        Validate the current access token.
 
         Returns:
-            bool: True als token geldig is
+            bool: True if the token is valid
         """
         if "oauth_token" not in session:
             return False
@@ -482,14 +482,14 @@ class RPRAuth:
 
     def validate_2fa(self):
         """
-        Valideer 2FA status van huidige user.
+        Validate the 2FA status of the current user.
 
-        Checkt de ACR claim uit de session. Zowel `acr="mfa"` (TOTP) als
-        `acr="phr"` (passkey/WebAuthn) worden geaccepteerd. Als de session
-        geen bevestiging geeft, wordt het userinfo endpoint geraadpleegd.
+        Checks the ACR claim in the session. Both `acr="mfa"` (TOTP) and
+        `acr="phr"` (passkey/WebAuthn) are accepted. Falls back to the
+        userinfo endpoint if the session does not confirm 2FA.
 
         Returns:
-            bool: True als 2FA is gevalideerd (acr in ["mfa", "phr"])
+            bool: True if 2FA is validated (acr in ["mfa", "phr"])
         """
         # Check session first (fastest)
         acr = session.get("acr", "pwd")
@@ -554,22 +554,22 @@ class RPRAuth:
 
     def require_2fa_reauth(self, force_fresh: bool = False):
         """
-        Start OIDC step-up authenticatie: vereist dat de gebruiker 2FA heeft voltooid.
+        Start OIDC step-up authentication: requires the user to have completed 2FA.
 
-        Stuurt de gebruiker naar de auth server met acr_values=mfa. De auth server
-        controleert de bestaande sessie:
-        - Passkey-inlog (acr=phr) → voldoet direct, geen extra prompt
-        - Al eerder 2FA gedaan (ook voor een andere app) → voldoet direct
-        - Nog geen 2FA → auth server toont uitsluitend het 2FA-scherm (geen wachtwoord opnieuw)
+        Sends the user to the auth server with acr_values=mfa. The auth server
+        checks the existing session:
+        - Passkey login (acr=phr) → satisfied immediately, no extra prompt
+        - 2FA already done (even for a different app) → satisfied immediately
+        - No 2FA yet → auth server shows only the 2FA screen (no password re-entry)
 
         Args:
-            force_fresh: Stuur prompt=login mee zodat de auth server de bestaande
-                         2fa_verified-status wist en altijd verse 2FA vraagt. Gebruik
-                         dit alleen voor gevoelige handelingen (via require_fresh_2fa),
-                         niet voor gewone @require_2fa routes.
+            force_fresh: Send prompt=login so the auth server clears the existing
+                         2fa_verified status and always demands fresh 2FA. Use only
+                         for sensitive actions (via require_fresh_2fa), not for
+                         regular @require_2fa routes.
 
         Returns:
-            Flask redirect response naar OAuth authorize endpoint
+            Flask redirect response to the OAuth authorize endpoint
         """
         redirect_uri = current_app.config["OAUTH_REDIRECT_URI"]
 
@@ -587,26 +587,26 @@ class RPRAuth:
 
     def require_fresh_2fa(self, session_key: str = "_fresh_2fa_granted"):
         """
-        Vereist een verse 2FA-verificatie specifiek voor een gevoelige actie.
+        Require fresh 2FA verification for a specific sensitive action.
 
-        Anders dan validate_2fa() accepteert deze methode geen 2FA die al gedaan
-        is tijdens het inloggen. De gebruiker moet expliciet 2FA voltooien voor
-        deze specifieke actie (bijv. admin-toegang).
+        Unlike validate_2fa(), this method does not accept 2FA that was
+        completed during login. The user must explicitly complete 2FA for
+        this particular action (e.g. admin access).
 
-        Gebruik in een before_request:
+        Use in a before_request:
 
             result = rpr_auth.require_fresh_2fa('_admin_2fa_granted')
             if result:
                 return result
 
-        De session_key wordt automatisch gewist bij uitloggen (session.clear()).
+        The session_key is automatically cleared on logout (session.clear()).
 
         Args:
-            session_key: Sleutel in de Flask-session om de status bij te houden.
+            session_key: Key in the Flask session used to track the status.
 
         Returns:
-            None als 2FA al is voltooid voor deze actie.
-            Flask redirect response als 2FA (nog) vereist is.
+            None if 2FA has already been completed for this action.
+            Flask redirect response if 2FA is still required.
         """
         # Al geautoriseerd in deze sessie voor deze actie
         if session.get(session_key, False):

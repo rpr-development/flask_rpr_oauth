@@ -2,13 +2,13 @@
 flask_rpr_oauth.helpers
 ~~~~~~~~~~~~~~~~~~~~~~
 
-Helper functies voor het ophalen en cachen van userinfo via de OAuth server.
-Geschikt voor gebruik in zowel API (Bearer tokens) als session-based authenticatie.
+Helper functions for fetching and caching userinfo via the OAuth server.
+Suitable for both API (Bearer token) and session-based authentication.
 
-Token validatie volgorde:
-  1. /oauth/userinfo  — werkt voor user tokens (authorization_code flow)
-  2. /oauth/introspect — fallback voor M2M tokens (client_credentials flow),
-                         die 403 krijgen op userinfo
+Token validation order:
+  1. /oauth/userinfo  — works for user tokens (authorization_code flow)
+  2. /oauth/introspect — fallback for M2M tokens (client_credentials flow),
+                         which receive 403 on userinfo
 """
 
 import logging
@@ -24,17 +24,17 @@ _userinfo_cache: Dict[str, Tuple[dict, float]] = {}
 
 def get_userinfo_from_token(token):
     """
-    Haal userinfo op voor een access token.
+    Fetch userinfo for an access token.
 
-    Probeert eerst /oauth/userinfo (user tokens). Als de server 403 teruggeeft
-    (wat gebruikelijk is voor M2M client_credentials tokens), wordt
-    /oauth/introspect gebruikt als fallback.
+    Tries /oauth/userinfo first (user tokens). If the server returns 403
+    (typical for M2M client_credentials tokens), falls back to
+    /oauth/introspect.
 
     Args:
         token (str): Access token
 
     Returns:
-        dict: Userinfo/introspection response of None bij error
+        dict: Userinfo/introspection response, or None on error
     """
     if token in _userinfo_cache:
         logger.debug("Userinfo cache hit")
@@ -79,13 +79,13 @@ def get_userinfo_from_token(token):
 
 def _introspect_token(token: str, oauth_base_url: str) -> dict | None:
     """
-    Valideer een token via het /oauth/introspect endpoint.
+    Validate a token via the /oauth/introspect endpoint.
 
-    Gebruikt OAUTH_CLIENT_ID en OAUTH_CLIENT_SECRET als HTTP Basic Auth,
-    conform RFC 7662 (Token Introspection).
+    Uses OAUTH_CLIENT_ID and OAUTH_CLIENT_SECRET as HTTP Basic Auth,
+    per RFC 7662 (Token Introspection).
 
     Returns:
-        dict met token claims inclusief 'token_type': 'm2m', of None bij error
+        dict with token claims including 'token_type': 'm2m', or None on error
     """
     client_id = current_app.config.get("OAUTH_CLIENT_ID")
     client_secret = current_app.config.get("OAUTH_CLIENT_SECRET")
@@ -125,7 +125,7 @@ def _introspect_token(token: str, oauth_base_url: str) -> dict | None:
 
 
 def clear_userinfo_cache():
-    """Leeg de userinfo cache (voor testing/development)."""
+    """Clear the userinfo cache (for testing/development)."""
     global _userinfo_cache
     _userinfo_cache = {}
     logger.info("Userinfo cache cleared")

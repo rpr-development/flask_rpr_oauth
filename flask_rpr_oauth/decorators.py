@@ -573,10 +573,10 @@ def any_group_required(*groups, **method_groups):
 
 def require_2fa(f):
     """
-    Decorator die vereist dat gebruiker 2FA heeft voltooid.
+    Decorator that requires the user to have completed 2FA.
 
-    Als de gebruiker niet is ingelogd, redirect naar login.
-    Als de gebruiker geen 2FA heeft voltooid, start een nieuwe OAuth flow met acr_values=mfa.
+    Redirects to login if the user is not authenticated.
+    Starts a new OAuth flow with acr_values=mfa if 2FA has not been completed.
 
     Example:
         @app.route('/admin/dashboard')
@@ -632,8 +632,8 @@ def require_2fa(f):
 # Extra decorators for explicit user/m2m enforcement
 def user_only(f):
     """
-    Decorator: alleen user tokens toegestaan (API) of session user.
-    API: blokkeert M2M tokens. Session: altijd toegestaan.
+    Decorator: only user tokens allowed (API) or session users.
+    API: blocks M2M tokens. Session: always allowed.
     """
 
     @wraps(f)
@@ -663,7 +663,7 @@ def user_only(f):
 
 def m2m_only(f):
     """
-    Decorator: alleen M2M tokens toegestaan (API). Session users geblokkeerd.
+    Decorator: only M2M tokens allowed (API). Session users are blocked.
     """
 
     @wraps(f)
