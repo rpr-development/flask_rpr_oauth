@@ -39,10 +39,10 @@ logger = logging.getLogger(__name__)
 
 def _post_logout_form(action: str, params: dict):
     """
-    Render een auto-submitting HTML POST form voor RP-Initiated Logout.
+    Render an auto-submitting HTML POST form for RP-Initiated Logout.
 
-    Gebruikt POST in plaats van GET redirect zodat grote JWTs (id_token_hint)
-    in de request body blijven en de URL-lengtelimiet van de server niet overschrijden.
+    Uses POST instead of a GET redirect so that large JWTs (id_token_hint)
+    remain in the request body and do not exceed the server's URL length limit.
     """
     fields = ''.join(
         f'<input type="hidden" name="{escape(k)}" value="{escape(v)}">'

@@ -74,3 +74,6 @@ venv.bak/
 # OS
 .DS_Store
 Thumbs.db
+
+# AI generated files
+.claude/

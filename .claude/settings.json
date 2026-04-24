@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(grep -E \"\\\\.py$|^d\")",
-      "Read(//c/Users/hutte/Documents/VSWorkspace/RPR-API/**)"
-    ]
-  }
-}

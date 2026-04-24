@@ -585,12 +585,12 @@ def require_2fa(f):
             return 'Admin Dashboard - 2FA required'
 
     Note:
-        - Passkey-inlog (`acr="phr"`) voldoet automatisch — geen extra 2FA gevraagd.
-        - 2FA gedaan bij een andere app op dezelfde auth server voldoet ook (sessie
-          wordt hergebruikt via OIDC step-up, geen opnieuw inloggen).
-        - Checkt eerst de session (snel); valideert bij de auth server indien nodig.
-        - Stuur nooit `prompt=login` via `require_2fa_reauth()` voor gewone routes:
-          dat wist de auth server-sessie. Gebruik `require_fresh_2fa()` daarvoor.
+        - Passkey login (`acr="phr"`) satisfies automatically — no additional 2FA requested.
+        - 2FA completed in another app on the same auth server also satisfies (session
+          is reused via OIDC step-up, no re-login required).
+        - Checks the session first (fast); validates with the auth server if necessary.
+        - Never send `prompt=login` via `require_2fa_reauth()` for regular routes:
+          that clears the auth server session. Use `require_fresh_2fa()` for that instead.
     """
 
     @wraps(f)
