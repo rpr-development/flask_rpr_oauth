@@ -10,6 +10,7 @@ import requests
 from flask import Blueprint, redirect, url_for, session, request, jsonify, current_app, make_response
 from markupsafe import escape
 from authlib.integrations.flask_client import OAuth
+from authlib.integrations.base_client.errors import MismatchingStateError
 from .models import OAuthUser, current_user
 from .exceptions import OAuthError, TokenExpiredError
 
@@ -264,6 +265,18 @@ class RPRAuth:
             # Redirect naar next of home
             next_page = session.pop("next", None) or url_for("index")
             return redirect(next_page)
+
+        except MismatchingStateError:
+            # OAuth state mismatch — sessie verlopen, meerdere tabs, of cookie niet meegestuurd.
+            # Bewaar de next-URL zodat de gebruiker na een nieuwe login op de juiste plek belandt.
+            next_url = session.get("next")
+            session.clear()
+            logger.warning(
+                "[callback] OAuth state mismatch — sessie gecleard, opnieuw inloggen"
+            )
+            if next_url:
+                session["next"] = next_url
+            return redirect(url_for("auth.login"))
 
         except Exception as e:
             logger.error(f"OAuth callback error: {e}", exc_info=True)
