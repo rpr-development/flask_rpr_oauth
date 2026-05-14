@@ -6,6 +6,7 @@ Main OAuth authentication class.
 """
 
 import logging
+import time
 import requests
 from flask import Blueprint, redirect, url_for, session, request, jsonify, current_app, make_response
 from markupsafe import escape
@@ -114,6 +115,7 @@ class RPRAuth:
         app.config.setdefault("WEBHOOK_SECRET", None)
         app.config.setdefault("OAUTH_PARTITIONED_COOKIES", True)
         app.config.setdefault("OAUTH_TIMEOUT", 10)
+        app.config.setdefault("OAUTH_TOKEN_REVALIDATE_INTERVAL", 300)
 
         # Voor CHIPS/Partitioned cookie support moet de session cookie SameSite=None; Secure
         # zijn, anders wordt het niet meegestuurd bij cross-site OAuth redirects (bijv. FiveM NUI).
@@ -161,6 +163,9 @@ class RPRAuth:
         # Registreer Partitioned cookie support voor iframe/CHIPS
         if app.config.get("OAUTH_PARTITIONED_COOKIES", False):
             self._register_partitioned_cookie_handler(app)
+
+        # Periodieke hervalidatie van het sessie-token bij de auth server
+        app.before_request(self._validate_session_token)
 
         # Store instance op app
         app.extensions = getattr(app, "extensions", {})
@@ -462,6 +467,43 @@ class RPRAuth:
             logger.warning("Token expired")
             session.clear()
             return redirect(url_for(self.login_view))
+
+    def _validate_session_token(self):
+        """
+        Periodieke hervalidatie van het sessie-token bij de auth server.
+
+        Wordt uitgevoerd als before_request hook. Als het token ingetrokken of
+        verlopen is, wordt de sessie gewist en de gebruiker doorgestuurd naar login.
+        Het interval is instelbaar via OAUTH_TOKEN_REVALIDATE_INTERVAL (seconden).
+        Stel in op 0 om bij elke request te valideren.
+        """
+        if 'oauth_user' not in session:
+            return None
+
+        # Sla auth-routes zelf over om redirect-loops te voorkomen
+        if request.endpoint and request.endpoint.startswith('auth.'):
+            return None
+
+        interval = current_app.config.get('OAUTH_TOKEN_REVALIDATE_INTERVAL', 300)
+
+        if interval > 0:
+            last_check = session.get('_token_validated_at', 0)
+            if time.time() - last_check < interval:
+                return None
+
+        if not self.validate_token():
+            logger.info('Sessie-token niet meer geldig, sessie gewist')
+            session.clear()
+            accept = request.headers.get('Accept', '')
+            if request.headers.get('X-Requested-With') == 'XMLHttpRequest' or 'application/json' in accept:
+                return jsonify({'error': 'Session expired'}), 401
+            session['next'] = request.url
+            session.modified = True
+            return redirect(url_for(self.login_view))
+
+        session['_token_validated_at'] = time.time()
+        session.modified = True
+        return None
 
     def validate_token(self):
         """
