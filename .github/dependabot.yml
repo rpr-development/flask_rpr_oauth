@@ -9,7 +9,11 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
-    open-pull-requests-limit: 10
+    open-pull-requests-limit: 1
+    groups:
+      python-dependencies:
+        patterns:
+          - "*"
     commit-message:
       prefix: "chore(deps)"
     labels:
@@ -22,7 +26,11 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 1
+    groups:
+      github-actions-dependencies:
+        patterns:
+          - "*"
     commit-message:
       prefix: "chore(deps)"
     labels:
