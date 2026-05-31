@@ -362,8 +362,9 @@ class RPRAuth:
         oauth_id = data.get("sub")
 
         if current_user.is_authenticated and current_user.oauth_id == oauth_id:
+            user_id = current_user.oauth_id  # capture before session.clear()
             session.clear()
-            logger.info(f"User {oauth_id} uitgelogd door token revocation")
+            logger.info("User %s uitgelogd door token revocation", user_id)
 
         return jsonify({"status": "success"})
 
@@ -377,8 +378,9 @@ class RPRAuth:
         oauth_id = data.get("sub")
 
         if current_user.is_authenticated and current_user.oauth_id == oauth_id:
+            user_id = current_user.oauth_id  # capture before session.clear()
             session.clear()
-            logger.info(f"User {oauth_id} uitgelogd door account deletion")
+            logger.info("User %s uitgelogd door account deletion", user_id)
 
         return jsonify({"status": "success"})
 

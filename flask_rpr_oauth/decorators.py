@@ -32,10 +32,8 @@ def _check_user_status():
     status = session.get("oauth_user", {}).get("user_status", "")
     message = _BLOCKED_STATUSES.get(status)
     if message:
-        logger.warning(
-            f"Toegang geweigerd voor user {session.get('oauth_user', {}).get('oauth_id')} "
-            f"met status {status!r}"
-        )
+        user_id = session.get("oauth_user", {}).get("oauth_id")
+        logger.warning("Toegang geweigerd voor user %s met status %r", user_id, status)
         return jsonify({"error": "account_blocked", "message": message}), 403
     return None
 
