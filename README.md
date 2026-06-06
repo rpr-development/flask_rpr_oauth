@@ -162,6 +162,26 @@ app.config['WEBHOOK_SECRET'] = 'your-webhook-secret'
 # Aanbevolen aan te laten voor applicaties die in iframe kunnen draaien
 app.config['OAUTH_PARTITIONED_COOKIES'] = True
 
+# Session bootstrap-route /auth/session-bootstrap (default: False)
+# Schakelt een route in die een normale first-party sessie opzet vanuit een
+# vooraf gemunt access token (het resultaat van een RFC 8693 Token Exchange,
+# scoped op de audience van deze app), ZONDER de gebruikelijke /auth/login
+# redirect. Bedoeld voor een FiveM phone NUI die de app in een iframe laadt en
+# auto-ingelogd moet worden.
+#
+# Het access token wordt aangeleverd via (in volgorde van voorkeur):
+#   - POST form-veld `access_token` (voorkeur)
+#   - query-parameter `access_token` (GET)
+#   - `Authorization: Bearer <token>` header
+# Het is een ACCESS TOKEN (bearer), GEEN code: er wordt niets ingewisseld bij
+# /oauth/token en er is geen client secret nodig. Het token wordt gevalideerd
+# door /oauth/userinfo aan te roepen; bij falen volgt een redirect naar login.
+# Optioneel kan `id_token` worden meegestuurd (POST form) en `next` (form/query).
+# Laat dit standaard uit; schakel alleen in als je deze flow expliciet gebruikt.
+app.config['OAUTH_ENABLE_SESSION_BOOTSTRAP'] = False
+# Back-compat: de oude vlag werkt nog en activeert dezelfde route + alias.
+app.config['OAUTH_ENABLE_FIVEM_BOOTSTRAP'] = False
+
 # Session configuration (voor Redis sessions)
 app.config['SESSION_TYPE'] = 'redis'
 app.config['SESSION_REDIS'] = redis.from_url('redis://localhost:6379')
@@ -177,6 +197,8 @@ De package registreert automatisch de volgende routes:
 - `GET /auth/callback` - OAuth callback endpoint
 - `GET /auth/logout` - Logout en clear session
 - `GET /auth/refresh` - Refresh access token
+- `GET, POST /auth/session-bootstrap` - Bearer-based auto-login: zet een first-party sessie op vanuit een aangeleverd access token (via POST `access_token` (voorkeur) / GET-query / `Authorization: Bearer`), NIET een code. Alleen actief als `OAUTH_ENABLE_SESSION_BOOTSTRAP=True` (of de oude `OAUTH_ENABLE_FIVEM_BOOTSTRAP=True`).
+- `GET, POST /auth/fivem-bootstrap` - **Deprecated** alias voor `/auth/session-bootstrap` (zelfde handler), behouden voor bestaande configs.
 - `POST /auth/webhook/token-revoked` - Webhook voor token revocation
 - `POST /auth/webhook/user-deleted` - Webhook voor user deletion
 
