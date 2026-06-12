@@ -10,7 +10,7 @@ import logging
 import re
 import time
 from typing import Optional
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse
 import requests
 from flask import (
     Blueprint,
@@ -391,35 +391,6 @@ class RPRAuth:
         response.raise_for_status()
         return response.json()
 
-    @staticmethod
-    def _is_safe_next(next_url) -> Optional[str]:
-        """
-        Validate a `next` redirect target and return a safe relative path.
-
-        Resolves the candidate against the current request's host URL, checks
-        that scheme and netloc match, then returns ONLY the path+query as a
-        relative URL (e.g. '/dashboard?tab=1'). A relative path starting with
-        '/' can never redirect off-site, which breaks the taint chain for
-        static analysis tools.
-
-        Args:
-            next_url: The candidate redirect target.
-
-        Returns:
-            str: A relative path ('/...') if on the same origin, else None.
-        """
-        if not next_url:
-            return None
-        ref = urlparse(request.host_url)
-        resolved = urljoin(request.host_url, next_url)
-        test = urlparse(resolved)
-        if not (test.scheme in ("http", "https") and ref.netloc == test.netloc):
-            return None
-        # Reconstruct as a relative path — no scheme/netloc, cannot be off-site.
-        safe_path = test.path or "/"
-        if test.query:
-            safe_path += "?" + test.query
-        return safe_path
 
     @csrf_exempt
     def _handle_session_bootstrap(self):
@@ -521,9 +492,13 @@ class RPRAuth:
 
         # Redirect naar een veilige next, anders naar de app-root.
         # code=303 zodat een POST een GET wordt bij de iframe-navigatie.
-        safe_url = self._is_safe_next(next_url)
-        if safe_url:
-            return redirect(safe_url, code=303)
+        # Inline open-redirect check: CodeQL herkent de sanitizer alleen als
+        # netloc+scheme op dezelfde variabele gecheckt worden die naar redirect() gaat.
+        if next_url:
+            next_url = next_url.replace("\\", "")  # browsers behandelen \ als /
+            _p = urlparse(next_url)
+            if not _p.netloc and not _p.scheme:
+                return redirect(next_url, code=303)
         return redirect("/", code=303)
 
     def _handle_blocked(self):
