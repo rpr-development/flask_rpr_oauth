@@ -148,7 +148,7 @@ class RPRAuth:
         # vanuit een vooraf gemunt access token (RFC 8693 token-exchange resultaat).
         # Standaard uit; alleen inschakelen als je deze trusted out-of-band bearer-flow
         # expliciet gebruikt (zie README).
-        app.config.setdefault("OAUTH_ENABLE_SESSION_BOOTSTRAP", False)
+        app.config.setdefault("OAUTH_ENABLE_SESSION_BOOTSTRAP", True)
         # Back-compat: oude vlag voor de (hernoemde) /auth/fivem-bootstrap alias.
         app.config.setdefault("OAUTH_ENABLE_FIVEM_BOOTSTRAP", False)
 
@@ -198,6 +198,9 @@ class RPRAuth:
         # Registreer Partitioned cookie support voor iframe/CHIPS
         if app.config.get("OAUTH_PARTITIONED_COOKIES", False):
             self._register_partitioned_cookie_handler(app)
+
+        # Registreer framing-headers voor embedded (FiveM NUI) sessies
+        self._register_embedded_frame_handler(app)
 
         # Periodieke hervalidatie van het sessie-token bij de auth server
         app.before_request(self._validate_session_token)
@@ -663,6 +666,33 @@ class RPRAuth:
 
         logger.info("Partitioned cookie handler geregistreerd (CHIPS ondersteuning)")
 
+    def _register_embedded_frame_handler(self, app):
+        """
+        Register after_request hook that allows framing for embedded (FiveM NUI) sessions.
+
+        When a session is marked as embedded (`session['rpr_embedded'] = True`), all
+        responses get permissive framing headers so the page remains loadable inside a
+        FiveM NUI iframe, even if the app or another middleware (e.g. Talisman) has set
+        a restrictive X-Frame-Options or Content-Security-Policy.
+        """
+
+        @app.after_request
+        def allow_framing_for_embedded(response):
+            if not session.get("rpr_embedded"):
+                return response
+            response.headers["X-Frame-Options"] = "ALLOWALL"
+            # Overschrijf een eventuele restrictieve frame-ancestors CSP-directive.
+            csp = response.headers.get("Content-Security-Policy", "")
+            if "frame-ancestors" in csp:
+                import re
+                csp = re.sub(r"frame-ancestors\s+[^;]+", "frame-ancestors *", csp)
+            else:
+                csp = (csp.rstrip("; ") + "; frame-ancestors *").lstrip("; ")
+            response.headers["Content-Security-Policy"] = csp
+            return response
+
+        logger.info("Embedded frame handler geregistreerd (FiveM NUI iframe-ondersteuning)")
+
     def _register_error_handlers(self, app):
         """
         Register error handlers.
@@ -902,6 +932,10 @@ class RPRAuth:
         html = render_template_string(_EMBEDDED_AUTH_SIGNAL_HTML, payload_json=json.dumps(payload))
         resp = make_response(html, 200)
         resp.headers["Cache-Control"] = "no-store"
+        # Sta framing vanuit elke origin toe zodat FiveM NUI-iframes dit signaal kunnen ontvangen,
+        # ook als de app X-Frame-Options of een strikte CSP frame-ancestors policy instelt.
+        resp.headers["X-Frame-Options"] = "ALLOWALL"
+        resp.headers["Content-Security-Policy"] = "frame-ancestors *"
         return resp
 
     def require_2fa_reauth(self, force_fresh: bool = False):
