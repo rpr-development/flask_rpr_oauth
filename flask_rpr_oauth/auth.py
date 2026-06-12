@@ -52,6 +52,19 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+_BLOCKED_HTML = """<!doctype html>
+<html lang="nl"><head><meta charset="utf-8"><title>Toegang geweigerd</title>
+<style>html,body{height:100%;margin:0}body{font-family:system-ui,sans-serif;background:#0f1115;
+color:#e6e6e6;display:flex;align-items:center;justify-content:center}.b{text-align:center;
+max-width:480px;padding:2rem}.icon{font-size:3rem;margin-bottom:1rem}h1{font-size:1.25rem;
+margin:0 0 .75rem}p{margin:0 0 1.5rem;opacity:.7;line-height:1.6}
+a{color:#5865F2;text-decoration:none}</style></head>
+<body><div class="b"><div class="icon">🚫</div>
+<h1>Toegang geweigerd</h1>
+<p>{{ message|e }}</p>
+<p><a href="/auth/logout">Uitloggen</a></p>
+</div></body></html>"""
+
 # §6 laag-2: pagina die de host-NUI (FiveM-iframe) via postMessage vraagt om (her)authenticatie.
 # Wordt geserveerd binnen het iframe i.p.v. een in-CEF redirect naar de auth-server.
 _EMBEDDED_AUTH_SIGNAL_HTML = """<!doctype html>
@@ -262,8 +275,9 @@ class RPRAuth:
                 logger.warning(
                     f"Login geweigerd voor {userinfo.get('email')} met status {user_status!r}"
                 )
+                session.clear()
                 session["oauth_blocked_message"] = _blocked_messages[user_status]
-                return redirect(url_for("auth.login"))
+                return redirect(url_for("auth.blocked"))
 
             # Vul de sessie met token, userinfo, permissions, groups en ACR
             self._populate_session(token, userinfo)
@@ -469,8 +483,9 @@ class RPRAuth:
             logger.warning(
                 f"Session bootstrap geweigerd voor {userinfo.get('email')} met status {user_status!r}"
             )
+            session.clear()
             session["oauth_blocked_message"] = _blocked_messages[user_status]
-            return redirect(url_for(self.login_view))
+            return redirect(url_for("auth.blocked"))
 
         # Bouw een minimaal token-dict en vul de sessie
         token = {"access_token": access_token}
@@ -489,6 +504,24 @@ class RPRAuth:
         if self._is_safe_next(next_url):
             return redirect(next_url, code=303)
         return redirect("/", code=303)
+
+    def _handle_blocked(self):
+        """Toon een 'account geblokkeerd' pagina en wis de sessie volledig.
+
+        Wordt aangeroepen na een redirect naar /auth/blocked, die door
+        _handle_callback en _handle_session_bootstrap wordt gestuurd wanneer
+        een BANNED of REVIEW gebruiker probeert in te loggen. Leest het bericht
+        uit session["oauth_blocked_message"] zodat het maar één request leven heeft.
+        """
+        message = session.pop(
+            "oauth_blocked_message",
+            "Je account heeft geen toegang. Neem contact op met jouw teammanager.",
+        )
+        session.clear()
+        html = render_template_string(_BLOCKED_HTML, message=message)
+        resp = make_response(html, 403)
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
 
     def _handle_logout(self):
         """Logout: clear local session and initiate RP-Initiated Logout on the auth server."""
@@ -623,6 +656,11 @@ class RPRAuth:
             "webhook_user_deleted",
             self._handle_webhook_user_deleted,
             methods=["POST"],
+        )
+        auth_bp.add_url_rule(
+            "/blocked",
+            "blocked",
+            self._handle_blocked,
         )
 
         app.register_blueprint(auth_bp)
