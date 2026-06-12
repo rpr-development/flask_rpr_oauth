@@ -394,27 +394,32 @@ class RPRAuth:
     @staticmethod
     def _is_safe_next(next_url) -> Optional[str]:
         """
-        Validate a `next` redirect target and return the sanitized URL.
+        Validate a `next` redirect target and return a safe relative path.
 
-        Resolves the candidate against the current request's host URL and
-        checks that scheme and netloc match. Returns the resolved URL (derived
-        from the trusted host_url, not raw user input) so callers can pass it
-        directly to redirect() — keeping CodeQL's taint tracking clean.
+        Resolves the candidate against the current request's host URL, checks
+        that scheme and netloc match, then returns ONLY the path+query as a
+        relative URL (e.g. '/dashboard?tab=1'). A relative path starting with
+        '/' can never redirect off-site, which breaks the taint chain for
+        static analysis tools.
 
         Args:
             next_url: The candidate redirect target.
 
         Returns:
-            str: The sanitized absolute URL if on the same origin, else None.
+            str: A relative path ('/...') if on the same origin, else None.
         """
         if not next_url:
             return None
         ref = urlparse(request.host_url)
         resolved = urljoin(request.host_url, next_url)
         test = urlparse(resolved)
-        if test.scheme in ("http", "https") and ref.netloc == test.netloc:
-            return resolved
-        return None
+        if not (test.scheme in ("http", "https") and ref.netloc == test.netloc):
+            return None
+        # Reconstruct as a relative path — no scheme/netloc, cannot be off-site.
+        safe_path = test.path or "/"
+        if test.query:
+            safe_path += "?" + test.query
+        return safe_path
 
     @csrf_exempt
     def _handle_session_bootstrap(self):
@@ -518,7 +523,7 @@ class RPRAuth:
         # code=303 zodat een POST een GET wordt bij de iframe-navigatie.
         safe_url = self._is_safe_next(next_url)
         if safe_url:
-            return redirect(safe_url, code=303)  # lgtm[py/url-redirection]
+            return redirect(safe_url, code=303)
         return redirect("/", code=303)
 
     def _handle_blocked(self):
