@@ -4,7 +4,7 @@ Tests voor 2FA functionaliteit in Flask RPR OAuth
 
 import pytest
 from flask import Flask, session
-from flask_rpr_oauth import RPRAuth, require_2fa, current_user
+from flask_rpr_oauth import RPRAuth, require_2fa, current_user, current_token
 from unittest.mock import Mock, patch
 
 
@@ -24,10 +24,12 @@ def app():
     # Initialiseer auth
     auth = RPRAuth(app)
 
-    # Test endpoint met 2FA
+    # Test endpoint met 2FA — werkt voor sessie én Bearer token
     @app.route("/sensitive")
     @require_2fa
     def sensitive():
+        if current_token:
+            return {"message": "success", "user": current_token.get("sub", "api-user")}
         return {"message": "success", "user": current_user.email}
 
     @app.route("/test-session")
@@ -209,6 +211,71 @@ def test_validate_2fa_failure(mock_get, app, auth_session):
 
         assert result is False
         assert session.get("twofa_validated") is False
+
+
+@patch("flask_rpr_oauth.helpers.get_userinfo_from_token")
+def test_require_2fa_bearer_mfa(mock_userinfo, client):
+    """Bearer user token met acr=mfa geeft toegang."""
+    mock_userinfo.return_value = {
+        "sub": "42",
+        "token_type": "user",
+        "acr": "mfa",
+        "email": "test@example.com",
+        "permissions": [],
+    }
+    response = client.get("/sensitive", headers={"Authorization": "Bearer some-token"})
+    assert response.status_code == 200
+    assert response.get_json()["message"] == "success"
+
+
+@patch("flask_rpr_oauth.helpers.get_userinfo_from_token")
+def test_require_2fa_bearer_phr(mock_userinfo, client):
+    """Bearer user token met acr=phr (passkey) geeft toegang."""
+    mock_userinfo.return_value = {
+        "sub": "42",
+        "token_type": "user",
+        "acr": "phr",
+        "email": "test@example.com",
+        "permissions": [],
+    }
+    response = client.get("/sensitive", headers={"Authorization": "Bearer some-token"})
+    assert response.status_code == 200
+
+
+@patch("flask_rpr_oauth.helpers.get_userinfo_from_token")
+def test_require_2fa_bearer_pwd_blocked(mock_userinfo, client):
+    """Bearer user token met acr=pwd (geen 2FA) krijgt 403."""
+    mock_userinfo.return_value = {
+        "sub": "42",
+        "token_type": "user",
+        "acr": "pwd",
+        "email": "test@example.com",
+        "permissions": [],
+    }
+    response = client.get("/sensitive", headers={"Authorization": "Bearer some-token"})
+    assert response.status_code == 403
+    assert response.get_json()["error"] == "mfa_required"
+
+
+@patch("flask_rpr_oauth.helpers.get_userinfo_from_token")
+def test_require_2fa_bearer_m2m_blocked(mock_userinfo, client):
+    """M2M Bearer token krijgt altijd 403 — geen 2FA-concept."""
+    mock_userinfo.return_value = {
+        "sub": "intranet-client",
+        "token_type": "m2m",
+        "permissions": ["intranet.read"],
+    }
+    response = client.get("/sensitive", headers={"Authorization": "Bearer some-m2m-token"})
+    assert response.status_code == 403
+    assert response.get_json()["error"] == "mfa_required"
+
+
+@patch("flask_rpr_oauth.helpers.get_userinfo_from_token")
+def test_require_2fa_bearer_invalid_token(mock_userinfo, client):
+    """Ongeldig Bearer token krijgt 401."""
+    mock_userinfo.return_value = None
+    response = client.get("/sensitive", headers={"Authorization": "Bearer invalid-token"})
+    assert response.status_code == 401
 
 
 @pytest.mark.skip(reason="Complex mocking - needs refactor")

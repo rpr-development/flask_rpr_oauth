@@ -8,6 +8,7 @@ Main OAuth authentication class.
 import json
 import logging
 import time
+from typing import Optional
 import requests
 from flask import (
     Blueprint,
@@ -724,6 +725,60 @@ class RPRAuth:
         session['_token_validated_at'] = time.time()
         session.modified = True
         return None
+
+    def get_access_token(self) -> Optional[str]:
+        """
+        Return the current user's access token from the session.
+
+        Returns:
+            str: The access token, or None if not authenticated.
+        """
+        return session.get("oauth_token", {}).get("access_token")
+
+    def api_request(
+        self,
+        method: str,
+        path: str,
+        access_token: Optional[str] = None,
+        **kwargs,
+    ) -> requests.Response:
+        """
+        Make an authenticated request to the auth server API.
+
+        No token validation or expiry checking is performed — the caller is
+        responsible for handling 401/403 responses. Pass ``access_token`` to
+        use an externally obtained token; omit it to use the current session
+        token automatically.
+
+        Args:
+            method: HTTP method (``"GET"``, ``"POST"``, ``"PUT"``, ``"DELETE"``, …).
+            path: API path relative to ``OAUTH_BASE_URL``, e.g. ``"/api/v1/users/123"``.
+            access_token: Bearer token to use. Defaults to the current session token.
+            **kwargs: Passed directly to ``requests.request()`` (json, data, params, …).
+
+        Returns:
+            requests.Response
+
+        Example::
+
+            resp = rpr_auth.api_request("PUT", f"/api/v1/users/{user_id}",
+                                        json={"firstname": "Jan"})
+            resp.raise_for_status()
+
+            # Of met een extern token:
+            resp = rpr_auth.api_request("GET", "/api/v1/sessions",
+                                        access_token=some_token)
+        """
+        if access_token is None:
+            access_token = self.get_access_token()
+
+        url = f"{current_app.config['OAUTH_BASE_URL']}{path}"
+        headers = kwargs.pop("headers", {})
+        if access_token:
+            headers.setdefault("Authorization", f"Bearer {access_token}")
+        timeout = kwargs.pop("timeout", current_app.config.get("OAUTH_TIMEOUT", 10))
+
+        return requests.request(method, url, headers=headers, timeout=timeout, **kwargs)
 
     def validate_token(self):
         """
