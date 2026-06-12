@@ -9,6 +9,7 @@ import json
 import logging
 import time
 from typing import Optional
+from urllib.parse import urlparse, urljoin
 import requests
 from flask import (
     Blueprint,
@@ -391,17 +392,21 @@ class RPRAuth:
         """
         Validate a `next` redirect target to prevent open redirects.
 
-        Only same-site relative paths are allowed: the value must start with a
-        single '/' and must not start with '//' (which a browser interprets as
-        a protocol-relative absolute URL).
+        Resolves the candidate against the current request's host URL and
+        checks that scheme and netloc match — the standard Flask pattern that
+        is also recognisable by static analysis tools such as CodeQL.
 
         Args:
             next_url: The candidate redirect target.
 
         Returns:
-            bool: True if the target is a safe relative path.
+            bool: True if the target stays on the same origin.
         """
-        return bool(next_url) and next_url.startswith("/") and not next_url.startswith("//")
+        if not next_url:
+            return False
+        ref = urlparse(request.host_url)
+        test = urlparse(urljoin(request.host_url, next_url))
+        return test.scheme in ("http", "https") and ref.netloc == test.netloc
 
     @csrf_exempt
     def _handle_session_bootstrap(self):
