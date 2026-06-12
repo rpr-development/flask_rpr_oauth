@@ -612,14 +612,19 @@ def require_2fa(f):
             # M2M tokens hebben geen gebruiker en daarmee geen 2FA-concept
             if userinfo.get("token_type") == "m2m":
                 logger.warning(
-                    f"require_2fa: M2M token van {userinfo.get('sub')} afgewezen voor {request.path}"
+                    "require_2fa: M2M token van %s afgewezen voor %s",
+                    userinfo.get("sub"),
+                    request.path,
                 )
                 return jsonify({"error": "mfa_required", "message": "M2M tokens cannot satisfy 2FA requirement"}), 403
 
             acr = userinfo.get("acr", "pwd")
             if acr not in ("mfa", "phr"):
                 logger.warning(
-                    f"require_2fa: acr={acr!r} onvoldoende voor {userinfo.get('sub')} op {request.path}"
+                    "require_2fa: acr=%r onvoldoende voor %s op %s",
+                    acr,
+                    userinfo.get("sub"),
+                    request.path,
                 )
                 return jsonify({"error": "mfa_required", "message": "2FA required (acr=mfa or phr)"}), 403
 

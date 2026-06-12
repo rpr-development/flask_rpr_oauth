@@ -22,8 +22,7 @@ def _make_app(enable_bootstrap=False, legacy_flag=False):
     app.config["OAUTH_CLIENT_SECRET"] = "test-secret"
     app.config["OAUTH_REDIRECT_URI"] = "http://localhost/auth/callback"
     app.config["TESTING"] = True
-    if enable_bootstrap:
-        app.config["OAUTH_ENABLE_SESSION_BOOTSTRAP"] = True
+    app.config["OAUTH_ENABLE_SESSION_BOOTSTRAP"] = bool(enable_bootstrap)
     if legacy_flag:
         app.config["OAUTH_ENABLE_FIVEM_BOOTSTRAP"] = True
 
@@ -137,7 +136,7 @@ def test_bootstrap_unsafe_next_redirects_to_root():
 
 
 def test_bootstrap_blocks_review_status():
-    """Een REVIEW-gebruiker wordt geweigerd en doorgestuurd naar login."""
+    """Een REVIEW-gebruiker wordt geweigerd en doorgestuurd naar /auth/blocked."""
     app = _make_app(enable_bootstrap=True)
     client = app.test_client()
 
@@ -148,14 +147,14 @@ def test_bootstrap_blocks_review_status():
         resp = client.get("/auth/session-bootstrap?access_token=at-123&next=/dashboard")
 
     assert resp.status_code == 302
-    assert resp.headers["Location"].endswith("/auth/login")
+    assert resp.headers["Location"].endswith("/auth/blocked")
     with client.session_transaction() as sess:
         assert "oauth_user" not in sess
         assert "oauth_blocked_message" in sess
 
 
 def test_bootstrap_blocks_banned_status():
-    """Een BANNED-gebruiker wordt geweigerd en doorgestuurd naar login."""
+    """Een BANNED-gebruiker wordt geweigerd en doorgestuurd naar /auth/blocked."""
     app = _make_app(enable_bootstrap=True)
     client = app.test_client()
 
@@ -166,7 +165,7 @@ def test_bootstrap_blocks_banned_status():
         resp = client.get("/auth/session-bootstrap?access_token=at-123")
 
     assert resp.status_code == 302
-    assert resp.headers["Location"].endswith("/auth/login")
+    assert resp.headers["Location"].endswith("/auth/blocked")
     with client.session_transaction() as sess:
         assert "oauth_user" not in sess
         assert "oauth_blocked_message" in sess

@@ -7,6 +7,7 @@ Main OAuth authentication class.
 
 import json
 import logging
+import re
 import time
 from typing import Optional
 from urllib.parse import urlparse, urljoin
@@ -357,7 +358,10 @@ class RPRAuth:
         session.modified = True  # Forceer sessie-opslag in Redis/filesystem
 
         logger.info(
-            f"User {userinfo.get('email')} succesvol ingelogd (2FA: {twofa_validated}, ACR: {acr})"
+            "User %s succesvol ingelogd (2FA: %s, ACR: %s)",
+            userinfo.get("email"),
+            twofa_validated,
+            acr,
         )
 
     def _userinfo_from_token(self, token: dict) -> dict:
@@ -388,25 +392,29 @@ class RPRAuth:
         return response.json()
 
     @staticmethod
-    def _is_safe_next(next_url) -> bool:
+    def _is_safe_next(next_url) -> Optional[str]:
         """
-        Validate a `next` redirect target to prevent open redirects.
+        Validate a `next` redirect target and return the sanitized URL.
 
         Resolves the candidate against the current request's host URL and
-        checks that scheme and netloc match — the standard Flask pattern that
-        is also recognisable by static analysis tools such as CodeQL.
+        checks that scheme and netloc match. Returns the resolved URL (derived
+        from the trusted host_url, not raw user input) so callers can pass it
+        directly to redirect() — keeping CodeQL's taint tracking clean.
 
         Args:
             next_url: The candidate redirect target.
 
         Returns:
-            bool: True if the target stays on the same origin.
+            str: The sanitized absolute URL if on the same origin, else None.
         """
         if not next_url:
-            return False
+            return None
         ref = urlparse(request.host_url)
-        test = urlparse(urljoin(request.host_url, next_url))
-        return test.scheme in ("http", "https") and ref.netloc == test.netloc
+        resolved = urljoin(request.host_url, next_url)
+        test = urlparse(resolved)
+        if test.scheme in ("http", "https") and ref.netloc == test.netloc:
+            return resolved
+        return None
 
     @csrf_exempt
     def _handle_session_bootstrap(self):
@@ -475,7 +483,7 @@ class RPRAuth:
         except Exception as e:
             # Wees robuust: nooit een stacktrace naar de iframe lekken.
             # Val terug op interactieve login.
-            logger.error(f"Session bootstrap error: {e}", exc_info=True)
+            logger.error("Session bootstrap error: %s", e, exc_info=True)
             return redirect(url_for(self.login_view))
 
         # Blokkeer REVIEW en BANNED gebruikers direct (defense-in-depth)
@@ -486,7 +494,9 @@ class RPRAuth:
                 "BANNED": "Je account is permanent non-actief gesteld. Neem contact op met jouw teammanager.",
             }
             logger.warning(
-                f"Session bootstrap geweigerd voor {userinfo.get('email')} met status {user_status!r}"
+                "Session bootstrap geweigerd voor %s met status %r",
+                userinfo.get("email"),
+                user_status,
             )
             session.clear()
             session["oauth_blocked_message"] = _blocked_messages[user_status]
@@ -506,8 +516,9 @@ class RPRAuth:
 
         # Redirect naar een veilige next, anders naar de app-root.
         # code=303 zodat een POST een GET wordt bij de iframe-navigatie.
-        if self._is_safe_next(next_url):
-            return redirect(next_url, code=303)
+        safe_url = self._is_safe_next(next_url)
+        if safe_url:
+            return redirect(safe_url, code=303)
         return redirect("/", code=303)
 
     def _handle_blocked(self):
@@ -727,7 +738,6 @@ class RPRAuth:
             # Overschrijf een eventuele restrictieve frame-ancestors CSP-directive.
             csp = response.headers.get("Content-Security-Policy", "")
             if "frame-ancestors" in csp:
-                import re
                 csp = re.sub(r"frame-ancestors\s+[^;]+", "frame-ancestors *", csp)
             else:
                 csp = (csp.rstrip("; ") + "; frame-ancestors *").lstrip("; ")
