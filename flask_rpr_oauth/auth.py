@@ -518,7 +518,7 @@ class RPRAuth:
         # code=303 zodat een POST een GET wordt bij de iframe-navigatie.
         safe_url = self._is_safe_next(next_url)
         if safe_url:
-            return redirect(safe_url, code=303)
+            return redirect(safe_url, code=303)  # lgtm[py/url-redirection]
         return redirect("/", code=303)
 
     def _handle_blocked(self):
