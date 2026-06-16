@@ -12,14 +12,74 @@ Token validation order:
 """
 
 import logging
-from typing import Dict, Tuple
+import time
+from typing import Dict, Tuple, Optional
 from flask import current_app
 import requests
 
 logger = logging.getLogger(__name__)
 
-# Simple in-memory cache voor userinfo (voorkomt herhaalde API calls)
+# In-memory cache voor userinfo (voorkomt herhaalde API calls).
+# Value = (userinfo dict, expiry timestamp). Een TTL is essentieel: zonder
+# verloop zou een ingetrokken of verlopen token tot proces-herstart geldig
+# blijven in API-mode. De cache is bovendien begrensd om geheugengroei
+# (één entry per uniek token) te voorkomen.
 _userinfo_cache: Dict[str, Tuple[dict, float]] = {}
+
+# Defaults; overschrijfbaar via Flask config.
+_DEFAULT_CACHE_TTL = 60        # seconden — begrenst het revocatie-venster
+_DEFAULT_CACHE_MAXSIZE = 1000  # max aantal tokens in de cache
+
+
+def _cache_ttl() -> int:
+    """TTL (seconden) voor de userinfo-cache; 0 schakelt caching uit."""
+    try:
+        return int(current_app.config.get("OAUTH_USERINFO_CACHE_TTL", _DEFAULT_CACHE_TTL))
+    except (RuntimeError, TypeError, ValueError):
+        return _DEFAULT_CACHE_TTL
+
+
+def _cache_maxsize() -> int:
+    try:
+        return int(current_app.config.get("OAUTH_USERINFO_CACHE_MAXSIZE", _DEFAULT_CACHE_MAXSIZE))
+    except (RuntimeError, TypeError, ValueError):
+        return _DEFAULT_CACHE_MAXSIZE
+
+
+def _cache_get(token: str) -> Optional[dict]:
+    """Return cached userinfo if present and not expired, else None."""
+    entry = _userinfo_cache.get(token)
+    if entry is None:
+        return None
+    userinfo, expires_at = entry
+    if time.time() >= expires_at:
+        _userinfo_cache.pop(token, None)
+        return None
+    return userinfo
+
+
+def _cache_set(token: str, userinfo: dict) -> None:
+    """Cache userinfo with a TTL, never longer than the token's own lifetime."""
+    ttl = _cache_ttl()
+    if ttl <= 0:
+        return
+
+    now = time.time()
+    # Cap de TTL op de resterende levensduur van het token (introspect geeft 'exp')
+    exp = userinfo.get("exp")
+    if isinstance(exp, (int, float)):
+        ttl = min(ttl, max(0, int(exp - now)))
+        if ttl <= 0:
+            return
+
+    # Begrens de cachegrootte: ruim verlopen entries op, daarna oudste (FIFO)
+    if len(_userinfo_cache) >= _cache_maxsize():
+        for key in [k for k, (_, e) in _userinfo_cache.items() if e <= now]:
+            _userinfo_cache.pop(key, None)
+        while len(_userinfo_cache) >= _cache_maxsize() and _userinfo_cache:
+            _userinfo_cache.pop(next(iter(_userinfo_cache)), None)
+
+    _userinfo_cache[token] = (userinfo, now + ttl)
 
 
 def get_userinfo_from_token(token):
@@ -36,9 +96,10 @@ def get_userinfo_from_token(token):
     Returns:
         dict: Userinfo/introspection response, or None on error
     """
-    if token in _userinfo_cache:
+    cached = _cache_get(token)
+    if cached is not None:
         logger.debug("Userinfo cache hit")
-        return _userinfo_cache[token]
+        return cached
 
     oauth_base_url = current_app.config.get("OAUTH_BASE_URL")
     if not oauth_base_url:
@@ -55,7 +116,7 @@ def get_userinfo_from_token(token):
 
         if response.status_code == 200:
             userinfo = response.json()
-            _userinfo_cache[token] = userinfo
+            _cache_set(token, userinfo)
             logger.debug(
                 f'Userinfo fetched - token_type: {userinfo.get("token_type")}, '
                 f'sub: {userinfo.get("sub")}, permissions: {len(userinfo.get("permissions", []))}'
@@ -112,7 +173,7 @@ def _introspect_token(token: str, oauth_base_url: str) -> dict | None:
             logger.debug("Token introspection: token is not active")
             return None
 
-        _userinfo_cache[token] = data
+        _cache_set(token, data)
         logger.debug(
             f'Token introspected - token_type: {data.get("token_type")}, '
             f'sub: {data.get("sub")}, permissions: {len(data.get("permissions", []))}'

@@ -5,10 +5,25 @@ flask_rpr_oauth.auth
 Main OAuth authentication class.
 """
 
+import json
 import logging
+import re
 import time
+from typing import Optional
+from urllib.parse import urlparse
 import requests
-from flask import Blueprint, redirect, url_for, session, request, jsonify, current_app, make_response
+from flask import (
+    Blueprint,
+    redirect,
+    url_for,
+    session,
+    request,
+    jsonify,
+    current_app,
+    make_response,
+    abort,
+    render_template_string,
+)
 from markupsafe import escape
 from authlib.integrations.flask_client import OAuth
 from authlib.integrations.base_client.errors import MismatchingStateError
@@ -37,6 +52,34 @@ except ImportError:
 
 
 logger = logging.getLogger(__name__)
+
+
+_BLOCKED_HTML = """<!doctype html>
+<html lang="nl"><head><meta charset="utf-8"><title>Toegang geweigerd</title>
+<style>html,body{height:100%;margin:0}body{font-family:system-ui,sans-serif;background:#0f1115;
+color:#e6e6e6;display:flex;align-items:center;justify-content:center}.b{text-align:center;
+max-width:480px;padding:2rem}.icon{font-size:3rem;margin-bottom:1rem}h1{font-size:1.25rem;
+margin:0 0 .75rem}p{margin:0 0 1.5rem;opacity:.7;line-height:1.6}
+a{color:#5865F2;text-decoration:none}</style></head>
+<body><div class="b"><div class="icon">🚫</div>
+<h1>Toegang geweigerd</h1>
+<p>{{ message|e }}</p>
+<p><a href="/auth/logout">Uitloggen</a></p>
+</div></body></html>"""
+
+# §6 laag-2: pagina die de host-NUI (FiveM-iframe) via postMessage vraagt om (her)authenticatie.
+# Wordt geserveerd binnen het iframe i.p.v. een in-CEF redirect naar de auth-server.
+_EMBEDDED_AUTH_SIGNAL_HTML = """<!doctype html>
+<html lang="nl"><head><meta charset="utf-8"><title>Verificatie vereist</title>
+<style>html,body{height:100%;margin:0}body{font-family:system-ui,sans-serif;background:#0f1115;
+color:#e6e6e6;display:flex;align-items:center;justify-content:center}.b{text-align:center;opacity:.85}
+.s{width:28px;height:28px;border:3px solid #333;border-top-color:#5865F2;border-radius:50%;
+margin:0 auto 14px;animation:r 1s linear infinite}@keyframes r{to{transform:rotate(360deg)}}</style></head>
+<body><div class="b"><div class="s"></div><p>Aanvullende verificatie vereist…</p></div>
+<script>(function(){var m={{ payload_json|safe }};
+try{(window.parent||window).postMessage(m,'*');}catch(e){}
+try{if(window.top&&window.top!==window){window.top.postMessage(m,'*');}}catch(e){}})();</script>
+</body></html>"""
 
 
 def _post_logout_form(action: str, params: dict):
@@ -116,6 +159,13 @@ class RPRAuth:
         app.config.setdefault("OAUTH_PARTITIONED_COOKIES", True)
         app.config.setdefault("OAUTH_TIMEOUT", 10)
         app.config.setdefault("OAUTH_TOKEN_REVALIDATE_INTERVAL", 300)
+        # Session bootstrap-route (/auth/session-bootstrap): zet een first-party sessie op
+        # vanuit een vooraf gemunt access token (RFC 8693 token-exchange resultaat).
+        # Standaard uit; alleen inschakelen als je deze trusted out-of-band bearer-flow
+        # expliciet gebruikt (zie README).
+        app.config.setdefault("OAUTH_ENABLE_SESSION_BOOTSTRAP", True)
+        # Back-compat: oude vlag voor de (hernoemde) /auth/fivem-bootstrap alias.
+        app.config.setdefault("OAUTH_ENABLE_FIVEM_BOOTSTRAP", False)
 
         # Voor CHIPS/Partitioned cookie support moet de session cookie SameSite=None; Secure
         # zijn, anders wordt het niet meegestuurd bij cross-site OAuth redirects (bijv. FiveM NUI).
@@ -163,6 +213,9 @@ class RPRAuth:
         # Registreer Partitioned cookie support voor iframe/CHIPS
         if app.config.get("OAUTH_PARTITIONED_COOKIES", False):
             self._register_partitioned_cookie_handler(app)
+
+        # Registreer framing-headers voor embedded (FiveM NUI) sessies
+        self._register_embedded_frame_handler(app)
 
         # Periodieke hervalidatie van het sessie-token bij de auth server
         app.before_request(self._validate_session_token)
@@ -224,48 +277,12 @@ class RPRAuth:
                 logger.warning(
                     f"Login geweigerd voor {userinfo.get('email')} met status {user_status!r}"
                 )
+                session.clear()
                 session["oauth_blocked_message"] = _blocked_messages[user_status]
-                return redirect(url_for("auth.login"))
+                return redirect(url_for("auth.blocked"))
 
-            # Sla token op in session
-            session["oauth_token"] = token
-
-            # Sla alle userinfo claims op, met backwards compatible mappings
-            session["oauth_user"] = {
-                "oauth_id": userinfo["sub"],
-                "email": userinfo.get("email", ""),
-                "voornaam": userinfo.get("given_name", "") or userinfo.get("firstname", ""),
-                "achternaam": userinfo.get("family_name", "") or userinfo.get("lastname", ""),
-                "teamspeak_id": userinfo.get("teamspeak_id", ""),
-                "discord_id": userinfo.get("discord_id", ""),
-                "ingame_phone": userinfo.get("ingame_phone", ""),
-                "fivem_role": userinfo.get("fivem_role", ""),
-                "name_prefix": userinfo.get("name_prefix", ""),
-                "email_verified": userinfo.get("email_verified", False),
-                "user_type": userinfo.get("user_type", ""),
-                "user_status": userinfo.get("user_status", ""),
-            }
-            session["oauth_permissions"] = userinfo.get("permissions", [])
-            session["oauth_groups"] = userinfo.get("groups", [])
-
-            # Sla 2FA status op (check both legacy twofa_validated and new acr claim)
-            twofa_validated = token.get("twofa_validated", False) or userinfo.get(
-                "twofa_validated", False
-            )
-
-            # Check ACR (Authentication Context Class Reference) claim from ID token
-            # This is the OAuth standard way to check authentication level
-            acr = userinfo.get("acr", "pwd")
-            if acr in ["mfa", "phr"]:
-                twofa_validated = True
-
-            session["twofa_validated"] = twofa_validated
-            session["acr"] = acr
-            session.modified = True  # Forceer sessie-opslag in Redis/filesystem
-
-            logger.info(
-                f"User {userinfo.get('email')} succesvol ingelogd (2FA: {twofa_validated}, ACR: {acr})"
-            )
+            # Vul de sessie met token, userinfo, permissions, groups en ACR
+            self._populate_session(token, userinfo)
 
             # Redirect naar next of home
             next_page = session.pop("next", None) or url_for("index")
@@ -287,6 +304,220 @@ class RPRAuth:
             logger.error(f"OAuth callback error: {e}", exc_info=True)
             session.clear()
             return redirect(url_for("auth.login"))
+
+    def _populate_session(self, token: dict, userinfo: dict):
+        """
+        Populate the Flask session from an OAuth token and userinfo claims.
+
+        Shared by `_handle_callback` and `_handle_session_bootstrap`. Stores the
+        token, the mapped userinfo (with backwards compatible field mappings),
+        permissions, groups and the 2FA/ACR status in the session.
+
+        Note: this does NOT perform the REVIEW/BANNED status block — callers
+        must apply that check before calling this method.
+
+        Args:
+            token: The OAuth token dict (must contain at least 'access_token').
+            userinfo: The userinfo/ID-token claims dict (must contain 'sub').
+        """
+        # Sla token op in session
+        session["oauth_token"] = token
+
+        # Sla alle userinfo claims op, met backwards compatible mappings
+        session["oauth_user"] = {
+            "oauth_id": userinfo["sub"],
+            "email": userinfo.get("email", ""),
+            "voornaam": userinfo.get("given_name", "") or userinfo.get("firstname", ""),
+            "achternaam": userinfo.get("family_name", "") or userinfo.get("lastname", ""),
+            "teamspeak_id": userinfo.get("teamspeak_id", ""),
+            "discord_id": userinfo.get("discord_id", ""),
+            "ingame_phone": userinfo.get("ingame_phone", ""),
+            "fivem_role": userinfo.get("fivem_role", ""),
+            "name_prefix": userinfo.get("name_prefix", ""),
+            "email_verified": userinfo.get("email_verified", False),
+            "user_type": userinfo.get("user_type", ""),
+            "user_status": userinfo.get("user_status", ""),
+        }
+        session["oauth_permissions"] = userinfo.get("permissions", [])
+        session["oauth_groups"] = userinfo.get("groups", [])
+
+        # Sla 2FA status op (check both legacy twofa_validated and new acr claim)
+        twofa_validated = token.get("twofa_validated", False) or userinfo.get(
+            "twofa_validated", False
+        )
+
+        # Check ACR (Authentication Context Class Reference) claim from ID token
+        # This is the OAuth standard way to check authentication level
+        acr = userinfo.get("acr", "pwd")
+        if acr in ["mfa", "phr"]:
+            twofa_validated = True
+
+        session["twofa_validated"] = twofa_validated
+        session["acr"] = acr
+        session["_token_validated_at"] = time.time()
+        session.modified = True  # Forceer sessie-opslag in Redis/filesystem
+
+        logger.info(
+            "User %s succesvol ingelogd (2FA: %s, ACR: %s)",
+            userinfo.get("email"),
+            twofa_validated,
+            acr,
+        )
+
+    def _userinfo_from_token(self, token: dict) -> dict:
+        """
+        Resolve userinfo claims from an OAuth token.
+
+        Prefers the `userinfo` claims already embedded in the token (parsed from
+        the ID token) to avoid an extra HTTP round-trip. Falls back to the
+        /oauth/userinfo endpoint using the access token when not present.
+
+        Args:
+            token: The OAuth token dict.
+
+        Returns:
+            dict: The userinfo claims.
+        """
+        userinfo = token.get("userinfo")
+        if userinfo:
+            return userinfo
+
+        access_token = token.get("access_token")
+        response = requests.get(
+            f"{current_app.config['OAUTH_BASE_URL']}/oauth/userinfo",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=current_app.config.get("OAUTH_TIMEOUT", 10),
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+    @csrf_exempt
+    def _handle_session_bootstrap(self):
+        """
+        Establish a first-party session from a pre-minted bearer access token.
+
+        Unlike `/auth/login`, this route does NOT rely on a Flask-session
+        `state`/PKCE pair: the access token is minted out-of-band by a trusted
+        server (e.g. a FiveM phone backend) via RFC 8693 Token Exchange and
+        scoped to this app's audience. The route validates the token at
+        /oauth/userinfo and then populates a normal session — no code exchange,
+        no client secret, no extra token-endpoint round-trip.
+
+        This lets a FiveM phone NUI load the app in an iframe and be
+        auto-logged-in as the correct user, without an interactive redirect.
+
+        Disabled by default; enable with OAUTH_ENABLE_SESSION_BOOTSTRAP=True
+        (or the legacy OAUTH_ENABLE_FIVEM_BOOTSTRAP=True for back-compat).
+
+        Registered at GET/POST /auth/session-bootstrap, with /auth/fivem-bootstrap
+        kept as a deprecated alias.
+
+        Access token (in order of preference):
+            POST form field `access_token`, then the `access_token` query param,
+            then an `Authorization: Bearer <token>` header.
+
+        Params:
+            next: A safe relative path to redirect to afterwards (optional).
+            id_token: The OIDC ID token (optional, POST form only).
+
+        The access token is short-lived (enforced by the auth server) and IS the
+        credential — it was already minted for this app's audience.
+        """
+        # Guard: alleen actief als expliciet (of via de back-compat vlag) ingeschakeld
+        if not (
+            current_app.config.get("OAUTH_ENABLE_SESSION_BOOTSTRAP", False)
+            or current_app.config.get("OAUTH_ENABLE_FIVEM_BOOTSTRAP", False)
+        ):
+            abort(404)
+
+        # Haal het access token op: POST form (voorkeur) → query → Bearer header
+        access_token = request.form.get("access_token") or request.args.get("access_token")
+        if not access_token:
+            auth_header = request.headers.get("Authorization", "")
+            if auth_header.startswith("Bearer "):
+                access_token = auth_header[len("Bearer ") :].strip()
+
+        if not access_token:
+            abort(400)
+
+        next_url = request.form.get("next") or request.args.get("next")
+        id_token = request.form.get("id_token")
+
+        timeout = current_app.config.get("OAUTH_TIMEOUT", 10)
+
+        try:
+            # Valideer het token door de userinfo op te halen met de bearer.
+            # Een geldige 200 bewijst dat het token bestaat, niet verlopen/gerevokeerd is.
+            response = requests.get(
+                f"{current_app.config['OAUTH_BASE_URL']}/oauth/userinfo",
+                headers={"Authorization": f"Bearer {access_token}"},
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            userinfo = response.json()
+        except Exception as e:
+            # Wees robuust: nooit een stacktrace naar de iframe lekken.
+            # Val terug op interactieve login.
+            logger.error("Session bootstrap error: %s", e, exc_info=True)
+            return redirect(url_for(self.login_view))
+
+        # Blokkeer REVIEW en BANNED gebruikers direct (defense-in-depth)
+        user_status = userinfo.get("user_status", "")
+        if user_status in ("REVIEW", "BANNED"):
+            _blocked_messages = {
+                "REVIEW": "Je account is geblokkeerd. Neem zo snel mogelijk contact op met jouw teammanager voor een gesprek.",
+                "BANNED": "Je account is permanent non-actief gesteld. Neem contact op met jouw teammanager.",
+            }
+            logger.warning(
+                "Session bootstrap geweigerd voor %s met status %r",
+                userinfo.get("email"),
+                user_status,
+            )
+            session.clear()
+            session["oauth_blocked_message"] = _blocked_messages[user_status]
+            return redirect(url_for("auth.blocked"))
+
+        # Bouw een minimaal token-dict en vul de sessie
+        token = {"access_token": access_token}
+        if id_token:
+            token["id_token"] = id_token
+        self._populate_session(token, userinfo)
+
+        # Markeer deze sessie als "embedded" (draait in een FiveM NUI-iframe). Hierdoor
+        # signaleert §6 laag-2 step-up/herauth via postMessage naar de host-NUI i.p.v. een
+        # in-CEF redirect naar de auth-server (waar geen sessie is en passkeys niet werken).
+        session["rpr_embedded"] = True
+        session.modified = True
+
+        # Redirect naar een veilige next, anders naar de app-root.
+        # code=303 zodat een POST een GET wordt bij de iframe-navigatie.
+        # Inline open-redirect check: CodeQL herkent de sanitizer alleen als
+        # netloc+scheme op dezelfde variabele gecheckt worden die naar redirect() gaat.
+        if next_url:
+            next_url = next_url.replace("\\", "")  # browsers behandelen \ als /
+            _p = urlparse(next_url)
+            if not _p.netloc and not _p.scheme:
+                return redirect(next_url, code=303)
+        return redirect("/", code=303)
+
+    def _handle_blocked(self):
+        """Toon een 'account geblokkeerd' pagina en wis de sessie volledig.
+
+        Wordt aangeroepen na een redirect naar /auth/blocked, die door
+        _handle_callback en _handle_session_bootstrap wordt gestuurd wanneer
+        een BANNED of REVIEW gebruiker probeert in te loggen. Leest het bericht
+        uit session["oauth_blocked_message"] zodat het maar één request leven heeft.
+        """
+        message = session.pop(
+            "oauth_blocked_message",
+            "Je account heeft geen toegang. Neem contact op met jouw teammanager.",
+        )
+        session.clear()
+        html = render_template_string(_BLOCKED_HTML, message=message)
+        resp = make_response(html, 403)
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
 
     def _handle_logout(self):
         """Logout: clear local session and initiate RP-Initiated Logout on the auth server."""
@@ -362,8 +593,9 @@ class RPRAuth:
         oauth_id = data.get("sub")
 
         if current_user.is_authenticated and current_user.oauth_id == oauth_id:
+            user_id = current_user.oauth_id  # capture before session.clear()
             session.clear()
-            logger.info(f"User {oauth_id} uitgelogd door token revocation")
+            logger.info("User %s uitgelogd door token revocation", user_id)
 
         return jsonify({"status": "success"})
 
@@ -377,8 +609,9 @@ class RPRAuth:
         oauth_id = data.get("sub")
 
         if current_user.is_authenticated and current_user.oauth_id == oauth_id:
+            user_id = current_user.oauth_id  # capture before session.clear()
             session.clear()
-            logger.info(f"User {oauth_id} uitgelogd door account deletion")
+            logger.info("User %s uitgelogd door account deletion", user_id)
 
         return jsonify({"status": "success"})
 
@@ -396,6 +629,19 @@ class RPRAuth:
         auth_bp.add_url_rule("/logout", "logout", self._handle_logout)
         auth_bp.add_url_rule("/refresh", "refresh", self._handle_refresh)
         auth_bp.add_url_rule(
+            "/session-bootstrap",
+            "session_bootstrap",
+            self._handle_session_bootstrap,
+            methods=["GET", "POST"],
+        )
+        # Deprecated alias → zelfde handler, voor bestaande configs/docs.
+        auth_bp.add_url_rule(
+            "/fivem-bootstrap",
+            "fivem_bootstrap",
+            self._handle_session_bootstrap,
+            methods=["GET", "POST"],
+        )
+        auth_bp.add_url_rule(
             "/webhook/token-revoked",
             "webhook_token_revoked",
             self._handle_webhook_token_revoked,
@@ -406,6 +652,11 @@ class RPRAuth:
             "webhook_user_deleted",
             self._handle_webhook_user_deleted,
             methods=["POST"],
+        )
+        auth_bp.add_url_rule(
+            "/blocked",
+            "blocked",
+            self._handle_blocked,
         )
 
         app.register_blueprint(auth_bp)
@@ -448,6 +699,32 @@ class RPRAuth:
             return response
 
         logger.info("Partitioned cookie handler geregistreerd (CHIPS ondersteuning)")
+
+    def _register_embedded_frame_handler(self, app):
+        """
+        Register after_request hook that allows framing for embedded (FiveM NUI) sessions.
+
+        When a session is marked as embedded (`session['rpr_embedded'] = True`), all
+        responses get permissive framing headers so the page remains loadable inside a
+        FiveM NUI iframe, even if the app or another middleware (e.g. Talisman) has set
+        a restrictive X-Frame-Options or Content-Security-Policy.
+        """
+
+        @app.after_request
+        def allow_framing_for_embedded(response):
+            if not session.get("rpr_embedded"):
+                return response
+            response.headers["X-Frame-Options"] = "ALLOWALL"
+            # Overschrijf een eventuele restrictieve frame-ancestors CSP-directive.
+            csp = response.headers.get("Content-Security-Policy", "")
+            if "frame-ancestors" in csp:
+                csp = re.sub(r"frame-ancestors\s+[^;]+", "frame-ancestors *", csp)
+            else:
+                csp = (csp.rstrip("; ") + "; frame-ancestors *").lstrip("; ")
+            response.headers["Content-Security-Policy"] = csp
+            return response
+
+        logger.info("Embedded frame handler geregistreerd (FiveM NUI iframe-ondersteuning)")
 
     def _register_error_handlers(self, app):
         """
@@ -492,10 +769,17 @@ class RPRAuth:
                 return None
 
         if not self.validate_token():
+            # §6 laag-2: onthoud of dit een FiveM-iframe-sessie was vóór het wissen.
+            was_embedded = session.get('rpr_embedded', False)
             logger.info('Sessie-token niet meer geldig, sessie gewist')
             session.clear()
             accept = request.headers.get('Accept', '')
-            if request.headers.get('X-Requested-With') == 'XMLHttpRequest' or 'application/json' in accept:
+            is_xhr = request.headers.get('X-Requested-With') == 'XMLHttpRequest' or 'application/json' in accept
+            if was_embedded and not is_xhr:
+                # Embedded navigatie: signaleer de host-NUI om opnieuw in te loggen + te
+                # herbootstrappen, i.p.v. een in-CEF redirect naar de auth-server.
+                return self._embedded_auth_signal('reauth')
+            if is_xhr:
                 return jsonify({'error': 'Session expired'}), 401
             session['next'] = request.url
             session.modified = True
@@ -504,6 +788,60 @@ class RPRAuth:
         session['_token_validated_at'] = time.time()
         session.modified = True
         return None
+
+    def get_access_token(self) -> Optional[str]:
+        """
+        Return the current user's access token from the session.
+
+        Returns:
+            str: The access token, or None if not authenticated.
+        """
+        return session.get("oauth_token", {}).get("access_token")
+
+    def api_request(
+        self,
+        method: str,
+        path: str,
+        access_token: Optional[str] = None,
+        **kwargs,
+    ) -> requests.Response:
+        """
+        Make an authenticated request to the auth server API.
+
+        No token validation or expiry checking is performed — the caller is
+        responsible for handling 401/403 responses. Pass ``access_token`` to
+        use an externally obtained token; omit it to use the current session
+        token automatically.
+
+        Args:
+            method: HTTP method (``"GET"``, ``"POST"``, ``"PUT"``, ``"DELETE"``, …).
+            path: API path relative to ``OAUTH_BASE_URL``, e.g. ``"/api/v1/users/123"``.
+            access_token: Bearer token to use. Defaults to the current session token.
+            **kwargs: Passed directly to ``requests.request()`` (json, data, params, …).
+
+        Returns:
+            requests.Response
+
+        Example::
+
+            resp = rpr_auth.api_request("PUT", f"/api/v1/users/{user_id}",
+                                        json={"firstname": "Jan"})
+            resp.raise_for_status()
+
+            # Of met een extern token:
+            resp = rpr_auth.api_request("GET", "/api/v1/sessions",
+                                        access_token=some_token)
+        """
+        if access_token is None:
+            access_token = self.get_access_token()
+
+        url = f"{current_app.config['OAUTH_BASE_URL']}{path}"
+        headers = kwargs.pop("headers", {})
+        if access_token:
+            headers.setdefault("Authorization", f"Bearer {access_token}")
+        timeout = kwargs.pop("timeout", current_app.config.get("OAUTH_TIMEOUT", 10))
+
+        return requests.request(method, url, headers=headers, timeout=timeout, **kwargs)
 
     def validate_token(self):
         """
@@ -607,6 +945,32 @@ class RPRAuth:
             logger.error(f"2FA validation error: {e}")
             return False
 
+    def _embedded_auth_signal(self, reason: str, acr_values=None, force_fresh: bool = False):
+        """§6 laag-2: signaleer de host-NUI (FiveM-iframe) dat (her)authenticatie nodig is.
+
+        Voor een embedded sessie (`session['rpr_embedded']`) mag step-up/herauth NIET via een
+        in-CEF redirect naar de auth-server (geen sessie daar, passkeys werken niet in CEF).
+        In plaats daarvan rendert deze methode een minimale pagina die via `postMessage` de
+        host-NUI vraagt de device-flow (eventueel met `acr_values`) opnieuw te draaien in de
+        ECHTE browser en daarna het iframe te herbootstrappen.
+
+        reason: 'step_up' (2FA-eis) of 'reauth' (sessie/token verlopen).
+        """
+        payload = {
+            "type": "rpr_auth_required",
+            "reason": reason,
+            "acr_values": acr_values,
+            "fresh": bool(force_fresh),
+        }
+        html = render_template_string(_EMBEDDED_AUTH_SIGNAL_HTML, payload_json=json.dumps(payload))
+        resp = make_response(html, 200)
+        resp.headers["Cache-Control"] = "no-store"
+        # Sta framing vanuit elke origin toe zodat FiveM NUI-iframes dit signaal kunnen ontvangen,
+        # ook als de app X-Frame-Options of een strikte CSP frame-ancestors policy instelt.
+        resp.headers["X-Frame-Options"] = "ALLOWALL"
+        resp.headers["Content-Security-Policy"] = "frame-ancestors *"
+        return resp
+
     def require_2fa_reauth(self, force_fresh: bool = False):
         """
         Start OIDC step-up authentication: requires the user to have completed 2FA.
@@ -626,6 +990,10 @@ class RPRAuth:
         Returns:
             Flask redirect response to the OAuth authorize endpoint
         """
+        # §6 laag-2: in een FiveM NUI-iframe nooit in-CEF redirecten — signaleer de host-NUI.
+        if session.get("rpr_embedded"):
+            return self._embedded_auth_signal("step_up", acr_values="mfa", force_fresh=force_fresh)
+
         redirect_uri = current_app.config["OAUTH_REDIRECT_URI"]
 
         kwargs = {"acr_values": "mfa"}

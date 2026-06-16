@@ -32,10 +32,8 @@ def _check_user_status():
     status = session.get("oauth_user", {}).get("user_status", "")
     message = _BLOCKED_STATUSES.get(status)
     if message:
-        logger.warning(
-            f"Toegang geweigerd voor user {session.get('oauth_user', {}).get('oauth_id')} "
-            f"met status {status!r}"
-        )
+        user_id = session.get("oauth_user", {}).get("oauth_id")
+        logger.warning("Toegang geweigerd voor user %s met status %r", user_id, status)
         return jsonify({"error": "account_blocked", "message": message}), 403
     return None
 
@@ -575,8 +573,16 @@ def require_2fa(f):
     """
     Decorator that requires the user to have completed 2FA.
 
-    Redirects to login if the user is not authenticated.
-    Starts a new OAuth flow with acr_values=mfa if 2FA has not been completed.
+    Supports both Bearer tokens (API) and session-based (browser) authentication.
+
+    Bearer token mode:
+        - User tokens: checks the `acr` claim in the userinfo response.
+          `acr="mfa"` (TOTP) and `acr="phr"` (passkey) are accepted; `acr="pwd"` returns 403.
+        - M2M tokens: always rejected with 403 — M2M has no 2FA concept.
+
+    Session mode:
+        - Redirects to login if the user is not authenticated.
+        - Starts a new OAuth flow with acr_values=mfa if 2FA has not been completed.
 
     Example:
         @app.route('/admin/dashboard')
@@ -595,7 +601,37 @@ def require_2fa(f):
 
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        # Check of user is ingelogd
+        # Bearer token pad (API-mode)
+        if _is_bearer_token_request():
+            token = _get_bearer_token()
+            userinfo = _get_userinfo_from_token(token)
+
+            if not userinfo:
+                return jsonify({"error": "invalid_token", "message": "Invalid or expired token"}), 401
+
+            # M2M tokens hebben geen gebruiker en daarmee geen 2FA-concept
+            if userinfo.get("token_type") == "m2m":
+                logger.warning(
+                    "require_2fa: M2M token van %s afgewezen voor %s",
+                    userinfo.get("sub"),
+                    request.path,
+                )
+                return jsonify({"error": "mfa_required", "message": "M2M tokens cannot satisfy 2FA requirement"}), 403
+
+            acr = userinfo.get("acr", "pwd")
+            if acr not in ("mfa", "phr"):
+                logger.warning(
+                    "require_2fa: acr=%r onvoldoende voor %s op %s",
+                    acr,
+                    userinfo.get("sub"),
+                    request.path,
+                )
+                return jsonify({"error": "mfa_required", "message": "2FA required (acr=mfa or phr)"}), 403
+
+            g._rpr_token_info = userinfo
+            return f(*args, **kwargs)
+
+        # Sessie-pad (browser-mode)
         if not current_user.is_authenticated:
             session["next"] = request.url
             session.modified = True  # Forceer sessie-opslag in Redis/filesystem
