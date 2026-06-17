@@ -716,11 +716,13 @@ class RPRAuth:
                 return response
             response.headers["X-Frame-Options"] = "ALLOWALL"
             # Overschrijf een eventuele restrictieve frame-ancestors CSP-directive.
+            # `*` dekt alleen standaard netwerkschemes (http/https/ws/wss). FiveM's NUI
+            # gebruikt het `nui:` scheme — dat moet expliciet worden toegevoegd.
             csp = response.headers.get("Content-Security-Policy", "")
             if "frame-ancestors" in csp:
-                csp = re.sub(r"frame-ancestors\s+[^;]+", "frame-ancestors *", csp)
+                csp = re.sub(r"frame-ancestors\s+[^;]+", "frame-ancestors * nui:", csp)
             else:
-                csp = (csp.rstrip("; ") + "; frame-ancestors *").lstrip("; ")
+                csp = (csp.rstrip("; ") + "; frame-ancestors * nui:").lstrip("; ")
             response.headers["Content-Security-Policy"] = csp
             return response
 
@@ -968,7 +970,7 @@ class RPRAuth:
         # Sta framing vanuit elke origin toe zodat FiveM NUI-iframes dit signaal kunnen ontvangen,
         # ook als de app X-Frame-Options of een strikte CSP frame-ancestors policy instelt.
         resp.headers["X-Frame-Options"] = "ALLOWALL"
-        resp.headers["Content-Security-Policy"] = "frame-ancestors *"
+        resp.headers["Content-Security-Policy"] = "frame-ancestors * nui:"
         return resp
 
     def require_2fa_reauth(self, force_fresh: bool = False):
