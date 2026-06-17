@@ -35,10 +35,13 @@ try:
 
     CSRF_AVAILABLE = True
 except ImportError:
+    # flask_wtf niet aanwezig, OF flask-wtf 1.3+ waarbij csrf_exempt uit de
+    # publieke API is verwijderd. CSRFProtect controleert nog steeds het
+    # _csrf_exempt attribuut op de view-functie, dus dat zetten we handmatig.
     CSRF_AVAILABLE = False
 
-    # Dummy decorator als flask-wtf niet beschikbaar is
     def csrf_exempt(func):
+        func._csrf_exempt = True
         return func
 
 try:
