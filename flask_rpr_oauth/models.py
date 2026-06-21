@@ -225,31 +225,74 @@ class OAuthUser:
 
 class _CurrentUserProxy:
     """
-    Proxy for current_user that reads the authenticated user from the session.
+    Proxy for current_user that reads the authenticated user from the session
+    OR, when no session is present, from g._rpr_token_info (Bearer token mode).
+
+    This allows route handlers and helper functions like get_profile to use
+    current_user transparently for both session-based (browser) and stateless
+    (API/Bearer) requests — no changes needed in routes or decorators.
+
+    M2M tokens are excluded: they have no user context and always return None.
     """
 
     def _get_user(self) -> Optional[OAuthUser]:
-        """Get current user from session."""
-        if "oauth_user" not in session:
+        """Get current user from session, or from Bearer token userinfo (API mode).
+
+        Session heeft prioriteit. Als er geen sessie is maar wel g._rpr_token_info
+        (gezet door @login_required / @permission_required voor Bearer requests),
+        wordt een OAuthUser gebouwd uit die token-userinfo. Zo werkt current_user
+        transparant in route handlers en hulpfuncties zoals get_profile, zonder dat
+        routes of decorators aangepast hoeven te worden.
+
+        M2M tokens (token_type='m2m') hebben geen gebruikercontext en retourneren None.
+        """
+        if "oauth_user" in session:
+            user_data = session["oauth_user"]
+            return OAuthUser(
+                oauth_id=user_data.get("oauth_id"),
+                email=user_data.get("email", ""),
+                voornaam=user_data.get("voornaam", ""),
+                achternaam=user_data.get("achternaam", ""),
+                teamspeak_id=user_data.get("teamspeak_id", ""),
+                discord_id=user_data.get("discord_id", ""),
+                ingame_phone=user_data.get("ingame_phone", ""),
+                fivem_role=user_data.get("fivem_role", ""),
+                name_prefix=user_data.get("name_prefix", ""),
+                email_verified=user_data.get("email_verified", False),
+                user_type=user_data.get("user_type", ""),
+                user_status=user_data.get("user_status", ""),
+                permissions=session.get("oauth_permissions", []),
+                groups=session.get("oauth_groups", []),
+                claims=user_data,
+            )
+
+        # Fallback: Bearer token mode (geen sessie, wel g._rpr_token_info).
+        # Decorators als @login_required zetten g._rpr_token_info vóór de route wordt
+        # aangeroepen, zodat current_user hier transparant werkt zonder sessie.
+        try:
+            token_info = getattr(g, '_rpr_token_info', None)
+        except RuntimeError:
+            return None  # buiten request context
+
+        if not token_info or token_info.get('token_type') == 'm2m':
             return None
 
-        user_data = session["oauth_user"]
         return OAuthUser(
-            oauth_id=user_data.get("oauth_id"),
-            email=user_data.get("email", ""),
-            voornaam=user_data.get("voornaam", ""),
-            achternaam=user_data.get("achternaam", ""),
-            teamspeak_id=user_data.get("teamspeak_id", ""),
-            discord_id=user_data.get("discord_id", ""),
-            ingame_phone=user_data.get("ingame_phone", ""),
-            fivem_role=user_data.get("fivem_role", ""),
-            name_prefix=user_data.get("name_prefix", ""),
-            email_verified=user_data.get("email_verified", False),
-            user_type=user_data.get("user_type", ""),
-            user_status=user_data.get("user_status", ""),
-            permissions=session.get("oauth_permissions", []),
-            groups=session.get("oauth_groups", []),
-            claims=user_data,
+            oauth_id=token_info.get('sub'),
+            email=token_info.get('email', ''),
+            voornaam=token_info.get('given_name', '') or token_info.get('firstname', ''),
+            achternaam=token_info.get('family_name', '') or token_info.get('lastname', ''),
+            teamspeak_id=token_info.get('teamspeak_id', ''),
+            discord_id=token_info.get('discord_id', ''),
+            ingame_phone=token_info.get('ingame_phone', ''),
+            fivem_role=token_info.get('fivem_role', ''),
+            name_prefix=token_info.get('name_prefix', ''),
+            email_verified=token_info.get('email_verified', False),
+            user_type=token_info.get('user_type', ''),
+            user_status=token_info.get('user_status', ''),
+            permissions=token_info.get('permissions', []),
+            groups=token_info.get('groups', []),
+            claims=token_info,
         )
 
     def __setattr__(self, name, value):
