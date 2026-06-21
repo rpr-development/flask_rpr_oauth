@@ -766,6 +766,13 @@ class RPRAuth:
         if request.endpoint and request.endpoint.startswith('auth.'):
             return None
 
+        # Bearer token requests worden volledig afgehandeld door de decorator
+        # (@login_required etc.) — sessie-revalidatie hier veroorzaakt een 401
+        # als het in-sessie opgeslagen token nieuwer is dan het meegestuurde
+        # Bearer token (bijv. na token-refresh door rpr_core).
+        if request.headers.get('Authorization', '').startswith('Bearer '):
+            return None
+
         interval = current_app.config.get('OAUTH_TOKEN_REVALIDATE_INTERVAL', 300)
 
         if interval > 0:
