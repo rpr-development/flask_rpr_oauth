@@ -162,7 +162,7 @@ app.config['WEBHOOK_SECRET'] = 'your-webhook-secret'
 # Aanbevolen aan te laten voor applicaties die in iframe kunnen draaien
 app.config['OAUTH_PARTITIONED_COOKIES'] = True
 
-# Session bootstrap-route /auth/session-bootstrap (default: False)
+# Session bootstrap-route /auth/session-bootstrap (default: True)
 # Schakelt een route in die een normale first-party sessie opzet vanuit een
 # vooraf gemunt access token (het resultaat van een RFC 8693 Token Exchange,
 # scoped op de audience van deze app), ZONDER de gebruikelijke /auth/login
@@ -177,8 +177,9 @@ app.config['OAUTH_PARTITIONED_COOKIES'] = True
 # /oauth/token en er is geen client secret nodig. Het token wordt gevalideerd
 # door /oauth/userinfo aan te roepen; bij falen volgt een redirect naar login.
 # Optioneel kan `id_token` worden meegestuurd (POST form) en `next` (form/query).
-# Laat dit standaard uit; schakel alleen in als je deze flow expliciet gebruikt.
-app.config['OAUTH_ENABLE_SESSION_BOOTSTRAP'] = False
+# Standaard AAN zodat onze apps direct in FiveM beschikbaar zijn; zet expliciet
+# op False als je deze flow niet wilt aanbieden.
+app.config['OAUTH_ENABLE_SESSION_BOOTSTRAP'] = True
 # Back-compat: de oude vlag werkt nog en activeert dezelfde route + alias.
 app.config['OAUTH_ENABLE_FIVEM_BOOTSTRAP'] = False
 

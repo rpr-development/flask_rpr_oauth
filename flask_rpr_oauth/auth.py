@@ -5,6 +5,7 @@ flask_rpr_oauth.auth
 Main OAuth authentication class.
 """
 
+import hmac
 import json
 import logging
 import re
@@ -55,6 +56,22 @@ except ImportError:
 
 
 logger = logging.getLogger(__name__)
+
+
+def _is_safe_redirect(target):
+    """True als ``target`` een veilige redirect-bestemming is (open-redirect-preventie).
+
+    Toegestaan: relatieve URLs, of absolute URLs op dezelfde host als het huidige
+    request (session["next"] wordt gevuld met request.url, dus same-host absoluut
+    moet blijven werken). Cross-host bestemmingen worden geweigerd.
+    """
+    if not target:
+        return False
+    candidate = target.replace("\\", "")  # browsers behandelen \ als /
+    parsed = urlparse(candidate)
+    if not parsed.netloc and not parsed.scheme:
+        return True
+    return parsed.scheme in ("http", "https") and parsed.netloc == urlparse(request.host_url).netloc
 
 
 _BLOCKED_HTML = """<!doctype html>
@@ -164,8 +181,8 @@ class RPRAuth:
         app.config.setdefault("OAUTH_TOKEN_REVALIDATE_INTERVAL", 300)
         # Session bootstrap-route (/auth/session-bootstrap): zet een first-party sessie op
         # vanuit een vooraf gemunt access token (RFC 8693 token-exchange resultaat).
-        # Standaard uit; alleen inschakelen als je deze trusted out-of-band bearer-flow
-        # expliciet gebruikt (zie README).
+        # Standaard AAN zodat onze applicaties direct in FiveM (NUI-iframe) beschikbaar zijn.
+        # Zet expliciet op False als je deze trusted out-of-band bearer-flow niet wilt.
         app.config.setdefault("OAUTH_ENABLE_SESSION_BOOTSTRAP", True)
         # Back-compat: oude vlag voor de (hernoemde) /auth/fivem-bootstrap alias.
         app.config.setdefault("OAUTH_ENABLE_FIVEM_BOOTSTRAP", False)
@@ -287,8 +304,10 @@ class RPRAuth:
             # Vul de sessie met token, userinfo, permissions, groups en ACR
             self._populate_session(token, userinfo)
 
-            # Redirect naar next of home
-            next_page = session.pop("next", None) or url_for("index")
+            # Redirect naar next of home (open-redirect-preventie)
+            next_page = session.pop("next", None)
+            if not _is_safe_redirect(next_page):
+                next_page = url_for("index")
             return redirect(next_page)
 
         except MismatchingStateError:
@@ -410,8 +429,9 @@ class RPRAuth:
         This lets a FiveM phone NUI load the app in an iframe and be
         auto-logged-in as the correct user, without an interactive redirect.
 
-        Disabled by default; enable with OAUTH_ENABLE_SESSION_BOOTSTRAP=True
-        (or the legacy OAUTH_ENABLE_FIVEM_BOOTSTRAP=True for back-compat).
+        Enabled by default (so our apps work inside FiveM out of the box); set
+        OAUTH_ENABLE_SESSION_BOOTSTRAP=False to disable. The legacy
+        OAUTH_ENABLE_FIVEM_BOOTSTRAP flag is still honored for back-compat.
 
         Registered at GET/POST /auth/session-bootstrap, with /auth/fivem-bootstrap
         kept as a deprecated alias.
@@ -427,9 +447,9 @@ class RPRAuth:
         The access token is short-lived (enforced by the auth server) and IS the
         credential — it was already minted for this app's audience.
         """
-        # Guard: alleen actief als expliciet (of via de back-compat vlag) ingeschakeld
+        # Guard: standaard aan (default True); expliciet op False zet 'm uit.
         if not (
-            current_app.config.get("OAUTH_ENABLE_SESSION_BOOTSTRAP", False)
+            current_app.config.get("OAUTH_ENABLE_SESSION_BOOTSTRAP", True)
             or current_app.config.get("OAUTH_ENABLE_FIVEM_BOOTSTRAP", False)
         ):
             abort(404)
@@ -579,11 +599,19 @@ class RPRAuth:
             raise TokenExpiredError("Token refresh mislukt")
 
     def _verify_webhook_secret(self):
-        """Verify webhook secret if configured."""
-        if current_app.config["WEBHOOK_SECRET"]:
-            provided_secret = request.headers.get("X-Webhook-Secret")
-            if provided_secret != current_app.config["WEBHOOK_SECRET"]:
-                return jsonify({"error": "Invalid secret"}), 401
+        """Verifieer het webhook-secret (fail-closed, constant-time).
+
+        Zonder geconfigureerd ``WEBHOOK_SECRET`` worden webhooks geweigerd — anders
+        zou iedereen die de URL kent sessies van gebruikers kunnen invalideren.
+        De vergelijking is timing-safe (hmac.compare_digest).
+        """
+        configured = current_app.config.get("WEBHOOK_SECRET")
+        if not configured:
+            logger.error("Webhook geweigerd: WEBHOOK_SECRET is niet geconfigureerd")
+            return jsonify({"error": "Webhook not configured"}), 503
+        provided_secret = request.headers.get("X-Webhook-Secret", "")
+        if not hmac.compare_digest(provided_secret, configured):
+            return jsonify({"error": "Invalid secret"}), 401
         return None
 
     def _handle_webhook_token_revoked(self):
@@ -592,7 +620,7 @@ class RPRAuth:
         if error_response:
             return error_response
 
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         oauth_id = data.get("sub")
 
         if current_user.is_authenticated and current_user.oauth_id == oauth_id:
@@ -608,7 +636,7 @@ class RPRAuth:
         if error_response:
             return error_response
 
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         oauth_id = data.get("sub")
 
         if current_user.is_authenticated and current_user.oauth_id == oauth_id:
