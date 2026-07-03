@@ -304,9 +304,11 @@ class RPRAuth:
             # Vul de sessie met token, userinfo, permissions, groups en ACR
             self._populate_session(token, userinfo)
 
-            # Redirect naar next of home (open-redirect-preventie)
-            next_page = session.pop("next", None)
-            if not _is_safe_redirect(next_page):
+            # Redirect naar next of home (open-redirect-preventie). Normaliseer
+            # backslashes vóór zowel de check als de redirect, zodat de gevalideerde
+            # waarde exact de waarde is die naar redirect() gaat (geen \\evil.com-bypass).
+            next_page = (session.pop("next", None) or "").replace("\\", "")
+            if not next_page or not _is_safe_redirect(next_page):
                 next_page = url_for("index")
             return redirect(next_page)
 
@@ -437,8 +439,8 @@ class RPRAuth:
         kept as a deprecated alias.
 
         Access token (in order of preference):
-            POST form field `access_token`, then the `access_token` query param,
-            then an `Authorization: Bearer <token>` header.
+            POST form field `access_token`, then an `Authorization: Bearer <token>`
+            header, then the `access_token` query param (deprecated — token in URL).
 
         Params:
             next: A safe relative path to redirect to afterwards (optional).
@@ -619,6 +621,10 @@ class RPRAuth:
         if not configured:
             logger.error("Webhook geweigerd: WEBHOOK_SECRET is niet geconfigureerd")
             return jsonify({"error": "Webhook not configured"}), 503
+        # compare_digest vereist gelijke types; coerce naar str zodat een als bytes
+        # geconfigureerd secret geen TypeError (500) geeft i.p.v. een nette 401.
+        if isinstance(configured, bytes):
+            configured = configured.decode("utf-8", "ignore")
         provided_secret = request.headers.get("X-Webhook-Secret", "")
         if not hmac.compare_digest(provided_secret, configured):
             return jsonify({"error": "Invalid secret"}), 401
