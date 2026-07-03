@@ -12,6 +12,7 @@ Token validation order:
 """
 
 import logging
+import threading
 import time
 from typing import Dict, Tuple, Optional
 from flask import current_app
@@ -25,6 +26,9 @@ logger = logging.getLogger(__name__)
 # blijven in API-mode. De cache is bovendien begrensd om geheugengroei
 # (één entry per uniek token) te voorkomen.
 _userinfo_cache: Dict[str, Tuple[dict, float]] = {}
+# Beschermt _userinfo_cache: onder Gunicorn threads/gevent muteren meerdere requests
+# de dict tegelijk (iteratie + pop in _cache_set) → anders RuntimeError/corruptie.
+_cache_lock = threading.Lock()
 
 # Defaults; overschrijfbaar via Flask config.
 _DEFAULT_CACHE_TTL = 60        # seconden — begrenst het revocatie-venster
@@ -48,14 +52,15 @@ def _cache_maxsize() -> int:
 
 def _cache_get(token: str) -> Optional[dict]:
     """Return cached userinfo if present and not expired, else None."""
-    entry = _userinfo_cache.get(token)
-    if entry is None:
-        return None
-    userinfo, expires_at = entry
-    if time.time() >= expires_at:
-        _userinfo_cache.pop(token, None)
-        return None
-    return userinfo
+    with _cache_lock:
+        entry = _userinfo_cache.get(token)
+        if entry is None:
+            return None
+        userinfo, expires_at = entry
+        if time.time() >= expires_at:
+            _userinfo_cache.pop(token, None)
+            return None
+        return userinfo
 
 
 def _cache_set(token: str, userinfo: dict) -> None:
@@ -72,14 +77,15 @@ def _cache_set(token: str, userinfo: dict) -> None:
         if ttl <= 0:
             return
 
-    # Begrens de cachegrootte: ruim verlopen entries op, daarna oudste (FIFO)
-    if len(_userinfo_cache) >= _cache_maxsize():
-        for key in [k for k, (_, e) in _userinfo_cache.items() if e <= now]:
-            _userinfo_cache.pop(key, None)
-        while len(_userinfo_cache) >= _cache_maxsize() and _userinfo_cache:
-            _userinfo_cache.pop(next(iter(_userinfo_cache)), None)
+    with _cache_lock:
+        # Begrens de cachegrootte: ruim verlopen entries op, daarna oudste (FIFO)
+        if len(_userinfo_cache) >= _cache_maxsize():
+            for key in [k for k, (_, e) in _userinfo_cache.items() if e <= now]:
+                _userinfo_cache.pop(key, None)
+            while len(_userinfo_cache) >= _cache_maxsize() and _userinfo_cache:
+                _userinfo_cache.pop(next(iter(_userinfo_cache)), None)
 
-    _userinfo_cache[token] = (userinfo, now + ttl)
+        _userinfo_cache[token] = (userinfo, now + ttl)
 
 
 def get_userinfo_from_token(token):
@@ -187,8 +193,9 @@ def _introspect_token(token: str, oauth_base_url: str) -> dict | None:
 
 def clear_userinfo_cache():
     """Clear the userinfo cache (for testing/development)."""
-    global _userinfo_cache
-    _userinfo_cache = {}
+    # .clear() i.p.v. herbinden: andere threads houden dezelfde dict-referentie vast.
+    with _cache_lock:
+        _userinfo_cache.clear()
     logger.info("Userinfo cache cleared")
 
 

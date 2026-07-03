@@ -454,12 +454,22 @@ class RPRAuth:
         ):
             abort(404)
 
-        # Haal het access token op: POST form (voorkeur) → query → Bearer header
-        access_token = request.form.get("access_token") or request.args.get("access_token")
+        # Haal het access token op: POST form (voorkeur) → Bearer header → query (afgeraden)
+        access_token = request.form.get("access_token")
         if not access_token:
             auth_header = request.headers.get("Authorization", "")
             if auth_header.startswith("Bearer "):
                 access_token = auth_header[len("Bearer ") :].strip()
+        if not access_token:
+            # Query-parameter blijft ondersteund voor bestaande consumers, maar is
+            # afgeraden: een token in de URL lekt naar logs/Referer/history. Migreer
+            # naar POST-form of Authorization: Bearer.
+            access_token = request.args.get("access_token")
+            if access_token:
+                logger.warning(
+                    "session-bootstrap access_token via query-parameter (afgeraden) — "
+                    "gebruik POST-form of Bearer-header"
+                )
 
         if not access_token:
             abort(400)
