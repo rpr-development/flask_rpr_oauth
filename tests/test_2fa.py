@@ -244,7 +244,7 @@ def test_require_2fa_bearer_phr(mock_userinfo, client):
 
 @patch("flask_rpr_oauth.helpers.get_userinfo_from_token")
 def test_require_2fa_bearer_pwd_blocked(mock_userinfo, client):
-    """Bearer user token met acr=pwd (geen 2FA) krijgt 403."""
+    """Bearer user token met acr=pwd (geen 2FA) krijgt een RFC 9470 step-up-challenge (401)."""
     mock_userinfo.return_value = {
         "sub": "42",
         "token_type": "user",
@@ -253,8 +253,12 @@ def test_require_2fa_bearer_pwd_blocked(mock_userinfo, client):
         "permissions": [],
     }
     response = client.get("/sensitive", headers={"Authorization": "Bearer some-token"})
-    assert response.status_code == 403
-    assert response.get_json()["error"] == "mfa_required"
+    # RFC 9470: geldig token, te laag niveau → 401 met step-up-challenge (niet 403).
+    assert response.status_code == 401
+    assert response.get_json()["error"] == "mfa_required"  # body ongewijzigd (backwards-compatibel)
+    challenge = response.headers["WWW-Authenticate"]
+    assert 'error="insufficient_user_authentication"' in challenge
+    assert 'acr_values="mfa"' in challenge
 
 
 @patch("flask_rpr_oauth.helpers.get_userinfo_from_token")

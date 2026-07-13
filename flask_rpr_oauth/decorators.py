@@ -607,8 +607,11 @@ def require_2fa(f):
 
     Bearer token mode:
         - User tokens: checks the `acr` claim in the userinfo response.
-          `acr="mfa"` (TOTP) and `acr="phr"` (passkey) are accepted; `acr="pwd"` returns 403.
-        - M2M tokens: always rejected with 403 — M2M has no 2FA concept.
+          `acr="mfa"` (TOTP) and `acr="phr"` (passkey) are accepted; `acr="pwd"` returns a
+          401 RFC 9470 step-up challenge (`WWW-Authenticate: Bearer
+          error="insufficient_user_authentication", acr_values="mfa"`), so the client knows
+          to re-authenticate at a higher level via `/oauth/authorize?acr_values=mfa`.
+        - M2M tokens: always rejected with 403 — M2M has no 2FA concept and cannot step up.
 
     Session mode:
         - Redirects to login if the user is not authenticated.
@@ -658,7 +661,16 @@ def require_2fa(f):
                     userinfo.get("sub"),
                     request.path,
                 )
-                return jsonify({"error": "mfa_required", "message": "2FA required (acr=mfa or phr)"}), 403
+                # RFC 9470 step-up-challenge: het token is geldig, maar het auth-niveau is te
+                # laag. Antwoord 401 met WWW-Authenticate: Bearer
+                # error="insufficient_user_authentication", acr_values="mfa" — dan weet de
+                # client machinaal dat de gebruiker naar /oauth/authorize (acr_values=mfa)
+                # moet. De JSON-body blijft ongewijzigd (backwards-compatibel).
+                return _bearer_unauthorized(
+                    {"error": "mfa_required", "message": "2FA required (acr=mfa or phr)"},
+                    error_code="insufficient_user_authentication",
+                    acr_values="mfa",
+                )
 
             g._rpr_token_info = userinfo
             return f(*args, **kwargs)

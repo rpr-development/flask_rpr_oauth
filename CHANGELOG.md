@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **RFC 9470 step-up-challenge** in `@require_2fa` (Bearer/API-modus): een geldig *user*-token
+  met te laag auth-niveau (`acr=pwd`) krijgt nu een `401` met
+  `WWW-Authenticate: Bearer error="insufficient_user_authentication", acr_values="mfa"`
+  (via de bestaande 401-helper), zodat een client machinaal weet dat de gebruiker via
+  `/oauth/authorize?acr_values=mfa` moet her-authenticeren. De JSON-body blijft
+  `{"error": "mfa_required", ...}` (backwards-compatibel).
 - **RFC 8707 audience-check** via nieuwe config `OAUTH_RESOURCE_ID`: als de auth-server
   een token aan een resource bindt (`aud` in userinfo/introspectie), weigert
   `get_userinfo_from_token` tokens die voor een andere resource zijn uitgegeven (→ 401 in
@@ -21,6 +27,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Enhanced pre-deploy scripts with security scanning (bandit), type checking (mypy), and version consistency checks
 
 ### Changed
+- **`@require_2fa` (Bearer): een user-token met te laag niveau geeft nu `401` i.p.v. `403`**
+  (RFC 9470 step-up, zie Added). M2M-tokens blijven `403` (kunnen niet step-uppen). Consumers
+  die op de JSON-body (`error == "mfa_required"`) checken, blijven ongewijzigd werken;
+  consumers die hard op statuscode `403` checkten moeten `401` meenemen.
 - Improved pre-deploy scripts with more comprehensive checks
 
 ### Fixed
