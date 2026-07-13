@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **RFC 8707 audience-check** via nieuwe config `OAUTH_RESOURCE_ID`: als de auth-server
+  een token aan een resource bindt (`aud` in userinfo/introspectie), weigert
+  `get_userinfo_from_token` tokens die voor een andere resource zijn uitgegeven (→ 401 in
+  de decorators). Opt-in: zonder `OAUTH_RESOURCE_ID` verandert er niets; tokens zonder
+  `aud` blijven overal geldig.
 - Dependabot configuration for automated dependency updates
 - GitHub Issue templates (bug report, feature request)
 - Pull Request template

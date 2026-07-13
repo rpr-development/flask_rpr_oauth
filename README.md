@@ -155,6 +155,12 @@ app.config['OAUTH_SCOPE'] = 'openid profile email'
 # Auto validate tokens (default: True)
 app.config['OAUTH_AUTO_VALIDATE'] = True
 
+# Audience-check (RFC 8707, default: uit). De canonieke resource-URI van DEZE
+# applicatie, gelijk aan applications.resource_uri op de auth-server. Indien
+# gezet worden Bearer-tokens die aan een ANDERE resource gebonden zijn (aud)
+# geweigerd (401). Tokens zonder aud (legacy) blijven overal geldig.
+app.config['OAUTH_RESOURCE_ID'] = 'https://gms.roleplayreality.nl'
+
 # Webhook secret voor validatie
 app.config['WEBHOOK_SECRET'] = 'your-webhook-secret'
 

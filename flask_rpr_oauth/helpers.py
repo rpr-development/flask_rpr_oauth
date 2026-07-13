@@ -88,6 +88,28 @@ def _cache_set(token: str, userinfo: dict) -> None:
         _userinfo_cache[token] = (userinfo, now + ttl)
 
 
+def _audience_allowed(data: dict) -> bool:
+    """RFC 8707: weiger tokens die aan een ANDERE resource server gebonden zijn.
+
+    Vereist ``OAUTH_RESOURCE_ID`` in de Flask-config: de canonieke resource-URI
+    van déze applicatie, gelijk aan ``applications.resource_uri`` op de auth-server
+    (bijv. ``https://gms.roleplayreality.nl``). Regels:
+
+    - geen ``OAUTH_RESOURCE_ID`` geconfigureerd → geen handhaving (opt-in);
+    - token zonder ``aud`` (legacy/ongebonden) → overal geldig;
+    - token mét ``aud`` → moet exact matchen, anders wordt het token geweigerd
+      alsof het ongeldig is (401 door de aanroepende decorator).
+    """
+    resource_id = current_app.config.get("OAUTH_RESOURCE_ID")
+    aud = data.get("aud")
+    if not resource_id or not aud or aud == resource_id:
+        return True
+    logger.warning(
+        f"Token geweigerd: aud {aud!r} hoort niet bij deze resource server ({resource_id!r})"
+    )
+    return False
+
+
 def get_userinfo_from_token(token):
     """
     Fetch userinfo for an access token.
@@ -95,6 +117,10 @@ def get_userinfo_from_token(token):
     Tries /oauth/userinfo first (user tokens). If the server returns 403
     (typical for M2M client_credentials tokens), falls back to
     /oauth/introspect.
+
+    Both responses carry the token's ``aud`` (RFC 8707); when
+    ``OAUTH_RESOURCE_ID`` is configured, tokens bound to a different resource
+    are rejected (returns None).
 
     Args:
         token (str): Access token
@@ -122,6 +148,8 @@ def get_userinfo_from_token(token):
 
         if response.status_code == 200:
             userinfo = response.json()
+            if not _audience_allowed(userinfo):
+                return None
             _cache_set(token, userinfo)
             logger.debug(
                 f'Userinfo fetched - token_type: {userinfo.get("token_type")}, '
@@ -177,6 +205,9 @@ def _introspect_token(token: str, oauth_base_url: str) -> dict | None:
 
         if not data.get("active"):
             logger.debug("Token introspection: token is not active")
+            return None
+
+        if not _audience_allowed(data):
             return None
 
         _cache_set(token, data)
