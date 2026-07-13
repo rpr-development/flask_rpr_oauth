@@ -230,6 +230,10 @@ class RPRAuth:
         # Registreer error handlers
         self._register_error_handlers(app)
 
+        # RFC 9728: protected-resource-metadata op root-niveau (altijd, los van
+        # auto_register_routes — dit is de discovery van de resource server zelf).
+        self._register_metadata_routes(app)
+
         # Registreer Partitioned cookie support voor iframe/CHIPS
         if app.config.get("OAUTH_PARTITIONED_COOKIES", False):
             self._register_partitioned_cookie_handler(app)
@@ -708,6 +712,43 @@ class RPRAuth:
 
         app.register_blueprint(auth_bp)
         logger.info("Auth routes geregistreerd")
+
+    def _handle_protected_resource_metadata(self):
+        """OAuth 2.0 Protected Resource Metadata (RFC 9728 §2).
+
+        Config-gedreven discovery-document zodat een MCP-/OAuth-client bij een 401
+        (zie de ``WWW-Authenticate: Bearer resource_metadata="..."``-header) ontdekt welke
+        authorization server en audience bij deze resource server horen. Bevat geen secrets;
+        publiek opvraagbaar.
+
+        Velden:
+            - ``resource``: ``OAUTH_RESOURCE_ID`` (canonieke resource-URI) of de request-host.
+            - ``authorization_servers``: ``[OAUTH_BASE_URL]``.
+            - ``scopes_supported``: ``OAUTH_RESOURCE_SCOPES_SUPPORTED`` of, bij afwezigheid,
+              afgeleid uit ``OAUTH_SCOPE``.
+            - ``bearer_methods_supported``: ``["header"]`` (Authorization: Bearer).
+        """
+        resource = current_app.config.get("OAUTH_RESOURCE_ID") or request.host_url.rstrip("/")
+        scopes = current_app.config.get("OAUTH_RESOURCE_SCOPES_SUPPORTED")
+        if scopes is None:
+            scopes = current_app.config.get("OAUTH_SCOPE", "openid profile email").split()
+        return jsonify(
+            {
+                "resource": resource,
+                "authorization_servers": [current_app.config["OAUTH_BASE_URL"]],
+                "scopes_supported": scopes,
+                "bearer_methods_supported": ["header"],
+            }
+        )
+
+    def _register_metadata_routes(self, app):
+        """Registreer het RFC 9728-metadata-endpoint op root-niveau (buiten de /auth-prefix)."""
+        app.add_url_rule(
+            "/.well-known/oauth-protected-resource",
+            "oauth_protected_resource",
+            self._handle_protected_resource_metadata,
+        )
+        logger.info("Protected-resource-metadata route geregistreerd (RFC 9728)")
 
     def _register_partitioned_cookie_handler(self, app):
         """

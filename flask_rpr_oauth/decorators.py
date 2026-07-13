@@ -67,6 +67,36 @@ def _get_userinfo_from_token(token):
     return get_userinfo_from_token(token)
 
 
+def _resource_metadata_url():
+    """URL van het protected-resource-metadata-document van deze resource server (RFC 9728).
+
+    Voorkeur voor ``OAUTH_RESOURCE_ID`` (de canonieke resource-URI van deze app); anders de
+    host van het huidige request.
+    """
+    base = current_app.config.get("OAUTH_RESOURCE_ID") or request.host_url
+    return f"{base.rstrip('/')}/.well-known/oauth-protected-resource"
+
+
+def _bearer_unauthorized(payload, *, error_code="invalid_token", acr_values=None):
+    """Bouw een 401-response met een RFC 6750 ``WWW-Authenticate: Bearer``-challenge.
+
+    De challenge draagt ``resource_metadata`` (RFC 9728), zodat een client bij een 401
+    automatisch de juiste authorization server + audience kan ontdekken. ``error_code`` en
+    ``acr_values`` zijn parameters zodat een RFC 9470 step-up-challenge
+    (``error="insufficient_user_authentication"``, ``acr_values="mfa"``) hier later op kan
+    aanhaken. ``payload`` blijft het bestaande JSON-body-formaat (backwards-compatibel).
+    """
+    response = jsonify(payload)
+    response.status_code = 401
+    challenge = f'Bearer resource_metadata="{_resource_metadata_url()}"'
+    if error_code:
+        challenge += f', error="{error_code}"'
+    if acr_values:
+        challenge += f', acr_values="{acr_values}"'
+    response.headers["WWW-Authenticate"] = challenge
+    return response
+
+
 def login_required(f):
     """
     Unified decorator that requires authentication via Bearer token OR session.
@@ -94,7 +124,7 @@ def login_required(f):
             userinfo = _get_userinfo_from_token(token)
 
             if not userinfo:
-                return jsonify({"error": "Invalid or expired token"}), 401
+                return _bearer_unauthorized({"error": "Invalid or expired token"})
 
             # Store token info in flask.g for current_token proxy
             g._rpr_token_info = userinfo
@@ -160,7 +190,7 @@ def permission_required(permission=None, **method_permissions):
                         token = _get_bearer_token()
                         userinfo = _get_userinfo_from_token(token)
                         if not userinfo:
-                            return jsonify({"error": "Invalid or expired token"}), 401
+                            return _bearer_unauthorized({"error": "Invalid or expired token"})
                         g._rpr_token_info = userinfo
                     return f(*args, **kwargs)
             else:
@@ -172,7 +202,7 @@ def permission_required(permission=None, **method_permissions):
                 userinfo = _get_userinfo_from_token(token)
 
                 if not userinfo:
-                    return jsonify({"error": "Invalid or expired token"}), 401
+                    return _bearer_unauthorized({"error": "Invalid or expired token"})
 
                 # Check permission for API token
                 permissions = userinfo.get("permissions", [])
@@ -263,7 +293,7 @@ def any_permission_required(*permissions, **method_permissions):
                         token = _get_bearer_token()
                         userinfo = _get_userinfo_from_token(token)
                         if not userinfo:
-                            return jsonify({"error": "Invalid or expired token"}), 401
+                            return _bearer_unauthorized({"error": "Invalid or expired token"})
                         g._rpr_token_info = userinfo
                     return f(*args, **kwargs)
                 # Parse comma-separated permissions
@@ -277,7 +307,7 @@ def any_permission_required(*permissions, **method_permissions):
                 userinfo = _get_userinfo_from_token(token)
 
                 if not userinfo:
-                    return jsonify({"error": "Invalid or expired token"}), 401
+                    return _bearer_unauthorized({"error": "Invalid or expired token"})
 
                 user_permissions = userinfo.get("permissions", [])
 
@@ -371,7 +401,7 @@ def group_required(group=None, **method_groups):
                         token = _get_bearer_token()
                         userinfo = _get_userinfo_from_token(token)
                         if not userinfo:
-                            return jsonify({"error": "Invalid or expired token"}), 401
+                            return _bearer_unauthorized({"error": "Invalid or expired token"})
                         g._rpr_token_info = userinfo
                     return f(*args, **kwargs)
             else:
@@ -383,7 +413,7 @@ def group_required(group=None, **method_groups):
                 userinfo = _get_userinfo_from_token(token)
 
                 if not userinfo:
-                    return jsonify({"error": "Invalid or expired token"}), 401
+                    return _bearer_unauthorized({"error": "Invalid or expired token"})
 
                 # Check if M2M token (M2M tokens hebben geen groups)
                 if userinfo.get("token_type") == "m2m":
@@ -482,7 +512,7 @@ def any_group_required(*groups, **method_groups):
                         token = _get_bearer_token()
                         userinfo = _get_userinfo_from_token(token)
                         if not userinfo:
-                            return jsonify({"error": "Invalid or expired token"}), 401
+                            return _bearer_unauthorized({"error": "Invalid or expired token"})
                         g._rpr_token_info = userinfo
                     return f(*args, **kwargs)
                 # Parse comma-separated groups
@@ -496,7 +526,7 @@ def any_group_required(*groups, **method_groups):
                 userinfo = _get_userinfo_from_token(token)
 
                 if not userinfo:
-                    return jsonify({"error": "Invalid or expired token"}), 401
+                    return _bearer_unauthorized({"error": "Invalid or expired token"})
 
                 # Check if M2M token
                 if userinfo.get("token_type") == "m2m":
@@ -607,7 +637,9 @@ def require_2fa(f):
             userinfo = _get_userinfo_from_token(token)
 
             if not userinfo:
-                return jsonify({"error": "invalid_token", "message": "Invalid or expired token"}), 401
+                return _bearer_unauthorized(
+                    {"error": "invalid_token", "message": "Invalid or expired token"}
+                )
 
             # M2M tokens hebben geen gebruiker en daarmee geen 2FA-concept
             if userinfo.get("token_type") == "m2m":
@@ -678,7 +710,7 @@ def user_only(f):
             token = _get_bearer_token()
             userinfo = _get_userinfo_from_token(token)
             if not userinfo:
-                return jsonify({"error": "Invalid or expired token"}), 401
+                return _bearer_unauthorized({"error": "Invalid or expired token"})
             if userinfo.get("token_type") == "m2m":
                 return (
                     jsonify(
@@ -708,7 +740,7 @@ def m2m_only(f):
             token = _get_bearer_token()
             userinfo = _get_userinfo_from_token(token)
             if not userinfo:
-                return jsonify({"error": "Invalid or expired token"}), 401
+                return _bearer_unauthorized({"error": "Invalid or expired token"})
             if userinfo.get("token_type") != "m2m":
                 return (
                     jsonify(
