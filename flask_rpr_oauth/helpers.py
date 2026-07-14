@@ -104,9 +104,10 @@ def _audience_allowed(data: dict) -> bool:
     aud = data.get("aud")
     if not resource_id or not aud or aud == resource_id:
         return True
-    # De aud-waarde zelf niet loggen: die is afgeleid van het aangeboden token.
+    # Geen waarden loggen: de aud is afgeleid van het aangeboden token en de resource-id
+    # is een config-waarde (CodeQL: config = gevoelig). De sleutelnaam volstaat voor ops.
     logger.warning(
-        f"Token geweigerd: token-aud hoort niet bij deze resource server ({resource_id!r})"
+        "Token geweigerd: token-aud hoort niet bij deze resource server (OAUTH_RESOURCE_ID)"
     )
     return False
 

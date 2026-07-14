@@ -832,8 +832,11 @@ class RPRAuth:
         aud = claims.get("aud")
         aud_ok = aud == expected_aud or (isinstance(aud, (list, tuple)) and expected_aud in aud)
         if not aud_ok:
-            # De aud-waarde zelf niet loggen: die komt uit het (nog onvertrouwde) token.
-            logger.warning("SET: aud bevat verwachte audience %r niet", expected_aud)
+            # Geen waarden loggen: de aud komt uit het (nog onvertrouwde) token en de
+            # verwachte audience is een config-waarde (CodeQL: config = gevoelig).
+            logger.warning(
+                "SET: aud bevat de verwachte audience (OAUTH_SSF_AUDIENCE/OAUTH_CLIENT_ID) niet"
+            )
             return None
 
         # nonce is verboden in een SET (o.a. OIDC BCL §2.4).
@@ -1087,7 +1090,11 @@ class RPRAuth:
             return resp, status
         permission = current_app.config.get("OAUTH_SCIM_PERMISSION", "auth.scim.provision")
         if permission not in (info.get("permissions") or []):
-            return self._scim_error(403, f"permissie {permission} vereist")
+            # Permissienaam niet interpoleren: config-waarde in detail zou ook gelogd
+            # worden (CodeQL: config = gevoelig); de sleutelnaam volstaat.
+            return self._scim_error(
+                403, "vereiste provisioning-permissie (OAUTH_SCIM_PERMISSION) ontbreekt"
+            )
         return None
 
     @csrf_exempt
