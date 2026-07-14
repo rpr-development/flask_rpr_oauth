@@ -69,6 +69,25 @@ logger = logging.getLogger(__name__)
 # OIDC Back-Channel Logout 1.0 §2.4 — het event-type dat een logout token identificeert.
 BACKCHANNEL_LOGOUT_EVENT = "http://schemas.openid.net/event/backchannel-logout"
 
+# Shared Signals Framework (RFC 8417) event-type-URI's — de SET's die de auth server
+# via /auth/ssf pusht (RISC = account-lifecycle, CAEP = sessie-/credential-events).
+RISC_ACCOUNT_DISABLED = "https://schemas.openid.net/secevent/risc/event-type/account-disabled"
+RISC_ACCOUNT_PURGED = "https://schemas.openid.net/secevent/risc/event-type/account-purged"
+CAEP_SESSION_REVOKED = "https://schemas.openid.net/secevent/caep/event-type/session-revoked"
+CAEP_CREDENTIAL_CHANGE = "https://schemas.openid.net/secevent/caep/event-type/credential-change"
+
+# Event → optionele app-callback (Flask-config-key). Elk bekend event beëindigt de sessie
+# (mark_logged_out → re-auth); een callback laat de app extra actie ondernemen (bv. lokale
+# gebruiker opruimen bij account-purged). De callback krijgt (sub, event_payload).
+_SSF_CALLBACK_KEYS = {
+    RISC_ACCOUNT_PURGED: "OAUTH_ON_ACCOUNT_PURGED",
+    RISC_ACCOUNT_DISABLED: "OAUTH_ON_ACCOUNT_DISABLED",
+    CAEP_SESSION_REVOKED: "OAUTH_ON_SESSION_REVOKED",
+    CAEP_CREDENTIAL_CHANGE: "OAUTH_ON_CREDENTIAL_CHANGE",
+}
+# Alle event-types die /auth/ssf herkent (de rest wordt genegeerd).
+_SSF_KNOWN_EVENTS = set(_SSF_CALLBACK_KEYS) | {BACKCHANNEL_LOGOUT_EVENT}
+
 # In-memory cache van de JWKS van de auth server (voor het valideren van logout tokens).
 # Value = (JsonWebKey set, expiry timestamp). Beschermd door een lock: onder gevent/threads
 # muteren meerdere requests hem tegelijk.
@@ -214,6 +233,14 @@ class RPRAuth:
         # Levensduur van de "uitgelogd"-markering in Redis; moet elke sessie overleven die op het
         # moment van de logout bestond. Default: ruim boven de sessie-levensduur.
         app.config.setdefault("OAUTH_LOGOUT_MARKER_TTL", 86400)
+        # Shared Signals Framework (RFC 8417 SET + RFC 8935 push): registreer /auth/ssf, de
+        # gedeelde ontvanger voor ondertekende Security Event Tokens (account-disabled/-purged,
+        # session-revoked, credential-change). Opvolger van de ad-hoc /auth/webhook/*. De
+        # handtekening is de auth (zelfde JWKS als de id_tokens); OAUTH_SSF_AUDIENCE is de
+        # verwachte `aud` in de SET (default = OAUTH_CLIENT_ID). Optionele per-event callbacks:
+        # OAUTH_ON_ACCOUNT_PURGED/_DISABLED/_SESSION_REVOKED/_CREDENTIAL_CHANGE — elk (sub, payload).
+        app.config.setdefault("OAUTH_ENABLE_SSF", True)
+        app.config.setdefault("OAUTH_SSF_AUDIENCE", None)
 
         # Voor CHIPS/Partitioned cookie support moet de session cookie SameSite=None; Secure
         # zijn, anders wordt het niet meegestuurd bij cross-site OAuth redirects (bijv. FiveM NUI).
@@ -758,25 +785,26 @@ class RPRAuth:
             _jwks_cache[base] = (key_set, now + _JWKS_CACHE_TTL)
         return key_set
 
-    def _validate_logout_token(self, logout_token):
-        """Valideer een OIDC Back-Channel Logout 1.0 logout token; geef de ``sub`` terug of None.
+    def _validate_set(self, token, expected_aud):
+        """Valideer een Security Event Token (RFC 8417); geef de claims-dict terug of None.
 
-        Controleert (§2.6): geldige RS256-handtekening (auth-server-JWKS), ``iss`` = de
-        auth server, ``aud`` bevat dit client_id, de ``events``-claim bevat het
-        backchannel-logout-event, en er is GÉÉN ``nonce`` (verboden in logout tokens).
+        Gedeelde validatie voor OIDC Back-Channel Logout logout tokens én SSF-events (CAEP/
+        RISC): geldige RS256-handtekening (auth-server-JWKS), ``iss`` = de auth server, ``aud``
+        bevat ``expected_aud``, en GÉÉN ``nonce`` (verboden in een SET). Controleert NIET welk
+        event erin zit — dat doet de aanroeper, afhankelijk van het endpoint.
         """
         from authlib.jose import jwt as jose_jwt
         from authlib.jose.errors import JoseError
 
         try:
             key_set = self._get_as_jwks()
-            claims = jose_jwt.decode(logout_token, key_set)
+            claims = jose_jwt.decode(token, key_set)
             claims.validate()  # exp/iat/nbf indien aanwezig
         except JoseError as e:
-            logger.warning("BCL: logout token ongeldig (handtekening/claims): %s", e)
+            logger.warning("SET ongeldig (handtekening/claims): %s", e)
             return None
         except Exception as e:
-            logger.warning("BCL: logout token kon niet gevalideerd worden: %s", e)
+            logger.warning("SET kon niet gevalideerd worden: %s", e)
             return None
 
         # iss moet de auth server zijn.
@@ -785,26 +813,38 @@ class RPRAuth:
         except Exception:
             issuer = current_app.config.get("OAUTH_BASE_URL")
         if issuer and claims.get("iss") != issuer:
-            logger.warning("BCL: iss %r != verwachte issuer %r", claims.get("iss"), issuer)
+            logger.warning("SET: iss %r != verwachte issuer %r", claims.get("iss"), issuer)
             return None
 
-        # aud moet dit client_id bevatten (string of lijst).
+        # aud moet de verwachte audience bevatten (string of lijst).
         aud = claims.get("aud")
-        client_id = current_app.config.get("OAUTH_CLIENT_ID")
-        aud_ok = aud == client_id or (isinstance(aud, (list, tuple)) and client_id in aud)
+        aud_ok = aud == expected_aud or (isinstance(aud, (list, tuple)) and expected_aud in aud)
         if not aud_ok:
-            logger.warning("BCL: aud %r bevat client_id %r niet", aud, client_id)
+            logger.warning("SET: aud %r bevat verwachte audience %r niet", aud, expected_aud)
+            return None
+
+        # nonce is verboden in een SET (o.a. OIDC BCL §2.4).
+        if "nonce" in claims:
+            logger.warning("SET bevat een nonce (verboden)")
+            return None
+
+        return dict(claims)
+
+    def _validate_logout_token(self, logout_token):
+        """Valideer een OIDC Back-Channel Logout 1.0 logout token; geef de ``sub`` terug of None.
+
+        Gebruikt de gedeelde ``_validate_set``-validatie (handtekening/iss/aud/nonce) en
+        controleert daarna het backchannel-logout-event + ``sub`` (§2.6). ``aud`` = dit client_id.
+        """
+        client_id = current_app.config.get("OAUTH_CLIENT_ID")
+        claims = self._validate_set(logout_token, expected_aud=client_id)
+        if claims is None:
             return None
 
         # events-claim moet het backchannel-logout event bevatten.
         events = claims.get("events")
         if not isinstance(events, dict) or BACKCHANNEL_LOGOUT_EVENT not in events:
             logger.warning("BCL: events-claim mist het backchannel-logout event")
-            return None
-
-        # nonce is verboden in een logout token (§2.4).
-        if "nonce" in claims:
-            logger.warning("BCL: logout token bevat een nonce (verboden)")
             return None
 
         sub = claims.get("sub")
@@ -894,6 +934,95 @@ class RPRAuth:
         resp.headers["Cache-Control"] = "no-store"
         return resp, 400
 
+    # ------------------------------------------------------------------
+    # Shared Signals Framework (RFC 8417 SET + RFC 8935 push) — gedeelde ontvanger
+    # ------------------------------------------------------------------
+    def _ssf_dispatch_callback(self, config_key, sub, event_payload):
+        """Roep een optionele app-callback aan (fail-safe — mag de SSF-afhandeling nooit breken)."""
+        cb = current_app.config.get(config_key)
+        if cb is None:
+            return
+        try:
+            cb(sub, event_payload)
+        except Exception as e:
+            logger.error("SSF-callback %s faalde voor sub=%s: %s", config_key, sub, e)
+
+    @csrf_exempt
+    def _handle_ssf_event(self):
+        """Shared Signals Framework SET-ontvanger (RFC 8935 §2.1 push).
+
+        Accepteert een ondertekende SET (``application/secevent+jwt`` in de body; valt terug op
+        een ``set``/``logout_token`` form-veld), valideert 'm via ``_validate_set`` en routeert
+        op event-type: elk bekend event beëindigt de sessie(s) van de gebruiker (mark_logged_out
+        → re-auth bij het volgende request); ``account-purged``/``-disabled``/``credential-change``
+        roepen daarnaast een optionele app-callback aan. Opvolger van de ad-hoc ``/auth/webhook/*``.
+        """
+        if not current_app.config.get("OAUTH_ENABLE_SSF", True):
+            abort(404)
+
+        # RFC 8935 §2.1: de SET staat als rauwe JWT in de body (application/secevent+jwt).
+        # Val voor coulante verzenders terug op een form-veld (`set` of `logout_token`).
+        ctype = (request.content_type or "").split(";")[0].strip().lower()
+        if ctype == "application/secevent+jwt":
+            token = request.get_data(as_text=True).strip()
+        else:
+            token = (request.form.get("set") or request.form.get("logout_token") or "").strip()
+        if not token:
+            return self._ssf_error("missing SET")
+
+        expected_aud = current_app.config.get("OAUTH_SSF_AUDIENCE") or current_app.config.get("OAUTH_CLIENT_ID")
+        claims = self._validate_set(token, expected_aud=expected_aud)
+        if claims is None:
+            return self._ssf_error("invalid SET")
+
+        events = claims.get("events")
+        if not isinstance(events, dict) or not events:
+            return self._ssf_error("no events")
+
+        # Subject: top-level `sub` of RFC 9493 `sub_id` (iss_sub-formaat) als fallback.
+        sub = claims.get("sub")
+        if not sub:
+            sub_id = claims.get("sub_id")
+            if isinstance(sub_id, dict):
+                sub = sub_id.get("sub")
+        sub = str(sub) if sub else None
+
+        handled = []
+        for event_uri, event_payload in events.items():
+            if event_uri not in _SSF_KNOWN_EVENTS:
+                logger.info("SSF: onbekend event-type genegeerd: %s", event_uri)
+                continue
+            handled.append(event_uri)
+            cb_key = _SSF_CALLBACK_KEYS.get(event_uri)
+            if cb_key:
+                self._ssf_dispatch_callback(cb_key, sub, event_payload if isinstance(event_payload, dict) else {})
+
+        if not handled:
+            # Geldige SET, maar geen enkel bekend event → 400 zodat de verzender het merkt.
+            return self._ssf_error("no known events")
+
+        # Beëindig de sessie(s): markeer de gebruiker uitgelogd → sterft bij het volgende request.
+        if sub:
+            self._mark_logged_out(sub)
+            # Is het huidige request diezelfde gebruiker, wis dan meteen die sessie (best-effort).
+            try:
+                if "oauth_user" in session and str(session["oauth_user"].get("oauth_id")) == sub:
+                    session.clear()
+            except Exception:
+                pass
+
+        logger.info("SSF-event verwerkt voor sub=%s events=%s", sub, handled)
+        resp = jsonify({"status": "ok"})
+        resp.headers["Cache-Control"] = "no-store"
+        return resp, 202  # RFC 8935 §2.2: 202 Accepted
+
+    def _ssf_error(self, message):
+        """SSF foutrespons (400, no-store)."""
+        logger.warning("SSF-event geweigerd: %s", message)
+        resp = jsonify({"error": "invalid_request", "error_description": message})
+        resp.headers["Cache-Control"] = "no-store"
+        return resp, 400
+
     def _enforce_backchannel_logout(self):
         """before_request: beëindig de sessie als er een back-channel-logout-event was.
 
@@ -956,6 +1085,12 @@ class RPRAuth:
             "/backchannel-logout",
             "backchannel_logout",
             self._handle_backchannel_logout,
+            methods=["POST"],
+        )
+        auth_bp.add_url_rule(
+            "/ssf",
+            "ssf_event",
+            self._handle_ssf_event,
             methods=["POST"],
         )
         auth_bp.add_url_rule(

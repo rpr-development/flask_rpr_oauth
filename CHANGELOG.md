@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Shared Signals Framework (RFC 8417 SET) ontvanger** op `/auth/ssf`: één gedeelde ontvanger
+  voor ondertekende Security Event Tokens (push, RFC 8935). Valideert de SET met dezelfde
+  auth-server-JWKS als de logout tokens (`_validate_set`, gedeeld met de back-channel-logout-
+  ontvanger) en routeert op event-type: `account-disabled`/`account-purged` (RISC),
+  `session-revoked`/`credential-change` (CAEP) beëindigen de sessie(s) van de gebruiker
+  (mark_logged_out → re-auth). Optionele per-event app-callbacks via config
+  (`OAUTH_ON_ACCOUNT_PURGED`/`_DISABLED`/`_SESSION_REVOKED`/`_CREDENTIAL_CHANGE`, elk `(sub, payload)`).
+  Config: `OAUTH_ENABLE_SSF` (default `True`), `OAUTH_SSF_AUDIENCE` (default `OAUTH_CLIENT_ID`).
+  Ondersteunt RFC 9493 `sub_id` (iss_sub) als fallback voor `sub`. Opvolger van de ad-hoc
+  `/auth/webhook/token-revoked` + `/auth/webhook/user-deleted` (blijven vooralsnog bestaan).
 - **RFC 9470 step-up-challenge** in `@require_2fa` (Bearer/API-modus): een geldig *user*-token
   met te laag auth-niveau (`acr=pwd`) krijgt nu een `401` met
   `WWW-Authenticate: Bearer error="insufficient_user_authentication", acr_values="mfa"`
