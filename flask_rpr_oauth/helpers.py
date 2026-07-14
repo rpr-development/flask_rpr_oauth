@@ -104,8 +104,9 @@ def _audience_allowed(data: dict) -> bool:
     aud = data.get("aud")
     if not resource_id or not aud or aud == resource_id:
         return True
+    # De aud-waarde zelf niet loggen: die is afgeleid van het aangeboden token.
     logger.warning(
-        f"Token geweigerd: aud {aud!r} hoort niet bij deze resource server ({resource_id!r})"
+        f"Token geweigerd: token-aud hoort niet bij deze resource server ({resource_id!r})"
     )
     return False
 

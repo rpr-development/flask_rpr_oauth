@@ -832,7 +832,8 @@ class RPRAuth:
         aud = claims.get("aud")
         aud_ok = aud == expected_aud or (isinstance(aud, (list, tuple)) and expected_aud in aud)
         if not aud_ok:
-            logger.warning("SET: aud %r bevat verwachte audience %r niet", aud, expected_aud)
+            # De aud-waarde zelf niet loggen: die komt uit het (nog onvertrouwde) token.
+            logger.warning("SET: aud bevat verwachte audience %r niet", expected_aud)
             return None
 
         # nonce is verboden in een SET (o.a. OIDC BCL §2.4).
@@ -923,8 +924,9 @@ class RPRAuth:
         try:
             if "oauth_user" in session and str(session["oauth_user"].get("oauth_id")) == sub:
                 session.clear()
-        except Exception:
-            pass
+        except Exception as e:
+            # Best-effort: de logout-markering staat al; dit mag de 200 nooit blokkeren.
+            logger.debug("BCL: kon huidige sessie niet direct wissen: %s", e, exc_info=True)
 
         if not marked:
             logger.error(
@@ -1020,8 +1022,9 @@ class RPRAuth:
             try:
                 if "oauth_user" in session and str(session["oauth_user"].get("oauth_id")) == sub:
                     session.clear()
-            except Exception:
-                pass
+            except Exception as e:
+                # Best-effort: de logout-markering staat al; dit mag de 202 nooit blokkeren.
+                logger.debug("SSF: kon huidige sessie niet direct wissen: %s", e, exc_info=True)
 
         logger.info("SSF-event verwerkt voor sub=%s events=%s", sub, handled)
         resp = jsonify({"status": "ok"})
@@ -1125,9 +1128,11 @@ class RPRAuth:
             return self._scim_error(501, "OAUTH_ON_SCIM_SYNC niet geconfigureerd")
         try:
             cb(user_id, resource)
-        except Exception as e:
-            # 5xx → de scim-worker requeuet en probeert het opnieuw; niet stilletjes slikken.
-            return self._scim_error(500, f"verwerking mislukt: {e}")
+        except Exception:
+            # 5xx → de scim-worker requeuet en probeert het opnieuw; details alleen
+            # server-side loggen (geen exception-informatie naar de client).
+            logger.exception("SCIM sync-callback faalde voor user=%s", user_id)
+            return self._scim_error(500, "verwerking mislukt in het doelsysteem")
         body = dict(resource)
         body["id"] = user_id
         logger.info("SCIM %s verwerkt voor user=%s", "create" if created else "sync", user_id)
@@ -1140,8 +1145,9 @@ class RPRAuth:
             return self._scim_error(501, "OAUTH_ON_SCIM_DELETE niet geconfigureerd")
         try:
             cb(user_id)
-        except Exception as e:
-            return self._scim_error(500, f"verwijdering mislukt: {e}")
+        except Exception:
+            logger.exception("SCIM delete-callback faalde voor user=%s", user_id)
+            return self._scim_error(500, "verwijdering mislukt in het doelsysteem")
         logger.info("SCIM delete verwerkt voor user=%s", user_id)
         return "", 204
 
@@ -1152,8 +1158,9 @@ class RPRAuth:
             return self._scim_error(404, "geen exportdata beschikbaar op dit systeem")
         try:
             data = cb(user_id)
-        except Exception as e:
-            return self._scim_error(500, f"opvragen mislukt: {e}")
+        except Exception:
+            logger.exception("SCIM get-callback faalde voor user=%s", user_id)
+            return self._scim_error(500, "opvragen mislukt in het doelsysteem")
         if data is None:
             return self._scim_error(404, "gebruiker onbekend op dit systeem")
         return self._scim_response(data, 200)
