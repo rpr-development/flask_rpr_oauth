@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **SCIM 2.0-ontvanger (RFC 7643/7644)** op `/scim/v2/Users[/<id>]`: herbruikbaar
+  provisioning-endpoint waarop de RPR-API scim-worker user-lifecycle pusht. Contract:
+  `PUT /Users/<id>` = **upsert** (aanmaken als de gebruiker lokaal nog niet bestaat),
+  `POST /Users` = create-fallback, `DELETE /Users/<id>` = idempotente verwijdering,
+  `GET /Users/<id>` = data voor de AVG-export. Auth: Bearer M2M-token gevalideerd via
+  userinfo/introspectie (`get_userinfo_from_token`, incl. RFC 8707 audience-check) + de
+  permissie `OAUTH_SCIM_PERMISSION` (default `auth.scim.provision`). De app implementeert
+  alleen callbacks: `OAUTH_ON_SCIM_SYNC(user_id, resource)`, `OAUTH_ON_SCIM_DELETE(user_id)`
+  en optioneel `OAUTH_ON_SCIM_GET(user_id) -> dict | None`; een callback-exception geeft
+  `500` zodat de worker requeuet. Config: `OAUTH_ENABLE_SCIM` (default `False` — pas
+  aanzetten mét callbacks). Fouten per RFC 7644 §3.12 (`urn:...:api:messages:2.0:Error`).
 - **Shared Signals Framework (RFC 8417 SET) ontvanger** op `/auth/ssf`: één gedeelde ontvanger
   voor ondertekende Security Event Tokens (push, RFC 8935). Valideert de SET met dezelfde
   auth-server-JWKS als de logout tokens (`_validate_set`, gedeeld met de back-channel-logout-

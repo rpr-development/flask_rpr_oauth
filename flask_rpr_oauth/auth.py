@@ -31,6 +31,7 @@ from authlib.integrations.flask_client import OAuth
 from authlib.integrations.base_client.errors import MismatchingStateError
 from .models import OAuthUser, current_user
 from .exceptions import OAuthError, TokenExpiredError
+from .helpers import get_userinfo_from_token
 
 try:
     from flask_wtf.csrf import csrf_exempt
@@ -241,6 +242,17 @@ class RPRAuth:
         # OAUTH_ON_ACCOUNT_PURGED/_DISABLED/_SESSION_REVOKED/_CREDENTIAL_CHANGE — elk (sub, payload).
         app.config.setdefault("OAUTH_ENABLE_SSF", True)
         app.config.setdefault("OAUTH_SSF_AUDIENCE", None)
+        # SCIM 2.0-ontvanger (RFC 7643/7644): registreer /scim/v2/Users[/<id>], waarop de
+        # auth server user-provisioning pusht (PUT = upsert, POST = create-fallback, DELETE;
+        # GET levert data voor de AVG-export). Auth: Bearer M2M-token, gevalideerd via
+        # userinfo/introspectie (get_userinfo_from_token, incl. RFC 8707 audience-check) +
+        # de permissie OAUTH_SCIM_PERMISSION. Standaard UIT — provisioning is pas zinvol
+        # als de app de callbacks implementeert:
+        #   OAUTH_ON_SCIM_SYNC(user_id: str, resource: dict)  — user aangemaakt/gewijzigd
+        #   OAUTH_ON_SCIM_DELETE(user_id: str)                — user verwijderd (idempotent)
+        #   OAUTH_ON_SCIM_GET(user_id: str) -> dict | None    — optioneel: AVG-exportdata
+        app.config.setdefault("OAUTH_ENABLE_SCIM", False)
+        app.config.setdefault("OAUTH_SCIM_PERMISSION", "auth.scim.provision")
 
         # Voor CHIPS/Partitioned cookie support moet de session cookie SameSite=None; Secure
         # zijn, anders wordt het niet meegestuurd bij cross-site OAuth redirects (bijv. FiveM NUI).
@@ -1023,6 +1035,129 @@ class RPRAuth:
         resp.headers["Cache-Control"] = "no-store"
         return resp, 400
 
+    # ------------------------------------------------------------------ SCIM 2.0 (RFC 7644)
+
+    def _scim_response(self, body, status):
+        """SCIM-respons met het juiste mediatype (RFC 7644 §3.1)."""
+        resp = jsonify(body)
+        resp.mimetype = "application/scim+json"
+        resp.headers["Cache-Control"] = "no-store"
+        return resp, status
+
+    def _scim_error(self, status, detail):
+        """SCIM-foutrespons (RFC 7644 §3.12)."""
+        if status >= 500:
+            logger.error("SCIM-request mislukt (%s): %s", status, detail)
+        else:
+            logger.warning("SCIM-request geweigerd (%s): %s", status, detail)
+        return self._scim_response(
+            {
+                "schemas": ["urn:ietf:params:scim:api:messages:2.0:Error"],
+                "status": str(status),
+                "detail": detail,
+            },
+            status,
+        )
+
+    def _scim_guard(self):
+        """Toegangscontrole voor de SCIM-routes.
+
+        Vereist een Bearer M2M-token dat via userinfo/introspectie valideert (inclusief de
+        RFC 8707 audience-check uit ``get_userinfo_from_token``) én de provisioning-permissie
+        draagt (``OAUTH_SCIM_PERMISSION``, default ``auth.scim.provision`` — de permissie van
+        de scim-worker op de auth server). Returnt None als het request door mag, anders een
+        foutrespons.
+        """
+        if not current_app.config.get("OAUTH_ENABLE_SCIM", False):
+            abort(404)
+        auth_header = request.headers.get("Authorization", "")
+        if not auth_header.startswith("Bearer "):
+            resp, status = self._scim_error(401, "Bearer-token vereist")
+            resp.headers["WWW-Authenticate"] = 'Bearer error="invalid_token"'
+            return resp, status
+        info = get_userinfo_from_token(auth_header[7:].strip())
+        if info is None:
+            resp, status = self._scim_error(
+                401, "token ongeldig of voor een andere resource server"
+            )
+            resp.headers["WWW-Authenticate"] = 'Bearer error="invalid_token"'
+            return resp, status
+        permission = current_app.config.get("OAUTH_SCIM_PERMISSION", "auth.scim.provision")
+        if permission not in (info.get("permissions") or []):
+            return self._scim_error(403, f"permissie {permission} vereist")
+        return None
+
+    @csrf_exempt
+    def _handle_scim_users_create(self):
+        """POST /scim/v2/Users — create (RFC 7644 §3.3; fallback van de PUT-upsert)."""
+        denied = self._scim_guard()
+        if denied is not None:
+            return denied
+        return self._scim_upsert(None, created=True)
+
+    @csrf_exempt
+    def _handle_scim_user(self, user_id):
+        """GET/PUT/DELETE /scim/v2/Users/<user_id> — de per-user provisioning-operaties.
+
+        Contract met de RPR-API scim-worker: PUT is een **upsert** (bestaat de gebruiker
+        lokaal nog niet, maak 'm dan aan — de worker hoeft dan nooit op POST terug te
+        vallen), DELETE is idempotent (al weg = ook goed) en GET voedt de AVG-export.
+        """
+        denied = self._scim_guard()
+        if denied is not None:
+            return denied
+        if request.method == "PUT":
+            return self._scim_upsert(str(user_id), created=False)
+        if request.method == "DELETE":
+            return self._scim_delete(str(user_id))
+        return self._scim_get(str(user_id))
+
+    def _scim_upsert(self, user_id, created):
+        """Gedeelde verwerking van PUT (upsert) en POST (create): app-callback + echo."""
+        resource = request.get_json(silent=True)
+        if not isinstance(resource, dict):
+            return self._scim_error(400, "JSON-body met een SCIM User-resource vereist")
+        user_id = user_id or str(resource.get("externalId") or "")
+        if not user_id:
+            return self._scim_error(400, "externalId (POST) of /Users/<id> (PUT) vereist")
+        cb = current_app.config.get("OAUTH_ON_SCIM_SYNC")
+        if cb is None:
+            return self._scim_error(501, "OAUTH_ON_SCIM_SYNC niet geconfigureerd")
+        try:
+            cb(user_id, resource)
+        except Exception as e:
+            # 5xx → de scim-worker requeuet en probeert het opnieuw; niet stilletjes slikken.
+            return self._scim_error(500, f"verwerking mislukt: {e}")
+        body = dict(resource)
+        body["id"] = user_id
+        logger.info("SCIM %s verwerkt voor user=%s", "create" if created else "sync", user_id)
+        return self._scim_response(body, 201 if created else 200)
+
+    def _scim_delete(self, user_id):
+        """DELETE-verwerking: app-callback; idempotent per RFC 7644 §3.6."""
+        cb = current_app.config.get("OAUTH_ON_SCIM_DELETE")
+        if cb is None:
+            return self._scim_error(501, "OAUTH_ON_SCIM_DELETE niet geconfigureerd")
+        try:
+            cb(user_id)
+        except Exception as e:
+            return self._scim_error(500, f"verwijdering mislukt: {e}")
+        logger.info("SCIM delete verwerkt voor user=%s", user_id)
+        return "", 204
+
+    def _scim_get(self, user_id):
+        """GET-verwerking: optionele app-callback levert de (AVG-export)data; anders 404."""
+        cb = current_app.config.get("OAUTH_ON_SCIM_GET")
+        if cb is None:
+            return self._scim_error(404, "geen exportdata beschikbaar op dit systeem")
+        try:
+            data = cb(user_id)
+        except Exception as e:
+            return self._scim_error(500, f"opvragen mislukt: {e}")
+        if data is None:
+            return self._scim_error(404, "gebruiker onbekend op dit systeem")
+        return self._scim_response(data, 200)
+
     def _enforce_backchannel_logout(self):
         """before_request: beëindig de sessie als er een back-channel-logout-event was.
 
@@ -1100,6 +1235,24 @@ class RPRAuth:
         )
 
         app.register_blueprint(auth_bp)
+
+        # SCIM 2.0-ontvanger (RFC 7644) op /scim/v2 — altijd geregistreerd, maar de handlers
+        # geven 404 zolang OAUTH_ENABLE_SCIM uit staat (zelfde patroon als /auth/ssf).
+        scim_bp = Blueprint("scim", __name__, url_prefix="/scim/v2")
+        scim_bp.add_url_rule(
+            "/Users",
+            "users_create",
+            self._handle_scim_users_create,
+            methods=["POST"],
+        )
+        scim_bp.add_url_rule(
+            "/Users/<user_id>",
+            "user",
+            self._handle_scim_user,
+            methods=["GET", "PUT", "DELETE"],
+        )
+        app.register_blueprint(scim_bp)
+
         logger.info("Auth routes geregistreerd")
 
     def _handle_protected_resource_metadata(self):
