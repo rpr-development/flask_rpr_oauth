@@ -9,6 +9,7 @@ import hmac
 import json
 import logging
 import re
+import threading
 import time
 from typing import Optional
 from urllib.parse import urlparse
@@ -54,8 +55,26 @@ except ImportError:
     FLASK_SESSION_AVAILABLE = False
     _ServerSideSessionInterface = None
 
+try:
+    import redis as _redis_lib
+
+    REDIS_AVAILABLE = True
+except ImportError:
+    REDIS_AVAILABLE = False
+    _redis_lib = None
+
 
 logger = logging.getLogger(__name__)
+
+# OIDC Back-Channel Logout 1.0 §2.4 — het event-type dat een logout token identificeert.
+BACKCHANNEL_LOGOUT_EVENT = "http://schemas.openid.net/event/backchannel-logout"
+
+# In-memory cache van de JWKS van de auth server (voor het valideren van logout tokens).
+# Value = (JsonWebKey set, expiry timestamp). Beschermd door een lock: onder gevent/threads
+# muteren meerdere requests hem tegelijk.
+_jwks_cache: dict = {}
+_jwks_lock = threading.Lock()
+_JWKS_CACHE_TTL = 3600  # seconden
 
 
 def _is_safe_redirect(target):
@@ -186,6 +205,15 @@ class RPRAuth:
         app.config.setdefault("OAUTH_ENABLE_SESSION_BOOTSTRAP", True)
         # Back-compat: oude vlag voor de (hernoemde) /auth/fivem-bootstrap alias.
         app.config.setdefault("OAUTH_ENABLE_FIVEM_BOOTSTRAP", False)
+        # OIDC Back-Channel Logout 1.0 (ontvanger): registreer /auth/backchannel-logout, waar
+        # de auth server een ondertekend logout token naartoe POST bij centrale logout/ban/REVIEW.
+        # Vereist een Redis (OAUTH_LOGOUT_REDIS_URL of de Flask-Session SESSION_REDIS) om álle
+        # sessies van een gebruiker te kunnen beëindigen (niet alleen die van het huidige request).
+        app.config.setdefault("OAUTH_ENABLE_BACKCHANNEL_LOGOUT", True)
+        app.config.setdefault("OAUTH_LOGOUT_REDIS_URL", None)
+        # Levensduur van de "uitgelogd"-markering in Redis; moet elke sessie overleven die op het
+        # moment van de logout bestond. Default: ruim boven de sessie-levensduur.
+        app.config.setdefault("OAUTH_LOGOUT_MARKER_TTL", 86400)
 
         # Voor CHIPS/Partitioned cookie support moet de session cookie SameSite=None; Secure
         # zijn, anders wordt het niet meegestuurd bij cross-site OAuth redirects (bijv. FiveM NUI).
@@ -240,6 +268,10 @@ class RPRAuth:
 
         # Registreer framing-headers voor embedded (FiveM NUI) sessies
         self._register_embedded_frame_handler(app)
+
+        # OIDC Back-Channel Logout: beëindig de sessie bij een central logout/ban-event.
+        # Vóór _validate_session_token zodat een uitgelogde sessie meteen sneuvelt.
+        app.before_request(self._enforce_backchannel_logout)
 
         # Periodieke hervalidatie van het sessie-token bij de auth server
         app.before_request(self._validate_session_token)
@@ -383,6 +415,9 @@ class RPRAuth:
         session["twofa_validated"] = twofa_validated
         session["acr"] = acr
         session["_token_validated_at"] = time.time()
+        # Stabiel login-moment (NIET herzet bij hervalidatie): de back-channel-logout-markering
+        # vergelijkt hiertegen — een logout-event ná dit moment beëindigt de sessie.
+        session["_login_at"] = time.time()
         session.modified = True  # Forceer sessie-opslag in Redis/filesystem
 
         logger.info(
@@ -666,6 +701,219 @@ class RPRAuth:
 
         return jsonify({"status": "success"})
 
+    # ------------------------------------------------------------------
+    # OIDC Back-Channel Logout 1.0 (ontvanger)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _bcl_key(sub):
+        """Redis-sleutel voor de "uitgelogd"-markering van een gebruiker (sub)."""
+        return f"rpr:bcl:logout:{sub}"
+
+    def _logout_redis(self):
+        """Redis-client voor de back-channel-logout-markeringen, of None.
+
+        Voorkeur: expliciete ``OAUTH_LOGOUT_REDIS_URL``. Anders de Flask-Session
+        ``SESSION_REDIS`` (als de app server-side sessies in Redis gebruikt). Zonder
+        Redis kan alleen de sessie van het huidige request worden beëindigd.
+        """
+        if getattr(self, "_bcl_redis_resolved", False):
+            return self._bcl_redis
+        self._bcl_redis_resolved = True
+        self._bcl_redis = None
+
+        url = current_app.config.get("OAUTH_LOGOUT_REDIS_URL")
+        if url and REDIS_AVAILABLE:
+            try:
+                self._bcl_redis = _redis_lib.from_url(url)
+            except Exception as e:
+                logger.error("BCL: kon OAUTH_LOGOUT_REDIS_URL niet verbinden: %s", e)
+        elif current_app.config.get("SESSION_REDIS") is not None:
+            # Hergebruik de bestaande Flask-Session Redis-client.
+            self._bcl_redis = current_app.config.get("SESSION_REDIS")
+        return self._bcl_redis
+
+    def _get_as_jwks(self):
+        """Haal (en cache) de JWKS van de auth server op als authlib-key-set."""
+        from authlib.jose import JsonWebKey
+
+        base = current_app.config["OAUTH_BASE_URL"]
+        now = time.time()
+        with _jwks_lock:
+            entry = _jwks_cache.get(base)
+            if entry and entry[1] > now:
+                return entry[0]
+
+        # Buiten de lock ophalen (netwerk).
+        try:
+            metadata = self.auth_server.load_server_metadata()
+            jwks_uri = metadata.get("jwks_uri") or f"{base}/.well-known/jwks.json"
+        except Exception:
+            jwks_uri = f"{base}/.well-known/jwks.json"
+
+        resp = requests.get(jwks_uri, timeout=current_app.config.get("OAUTH_TIMEOUT", 10))
+        resp.raise_for_status()
+        key_set = JsonWebKey.import_key_set(resp.json())
+
+        with _jwks_lock:
+            _jwks_cache[base] = (key_set, now + _JWKS_CACHE_TTL)
+        return key_set
+
+    def _validate_logout_token(self, logout_token):
+        """Valideer een OIDC Back-Channel Logout 1.0 logout token; geef de ``sub`` terug of None.
+
+        Controleert (§2.6): geldige RS256-handtekening (auth-server-JWKS), ``iss`` = de
+        auth server, ``aud`` bevat dit client_id, de ``events``-claim bevat het
+        backchannel-logout-event, en er is GÉÉN ``nonce`` (verboden in logout tokens).
+        """
+        from authlib.jose import jwt as jose_jwt
+        from authlib.jose.errors import JoseError
+
+        try:
+            key_set = self._get_as_jwks()
+            claims = jose_jwt.decode(logout_token, key_set)
+            claims.validate()  # exp/iat/nbf indien aanwezig
+        except JoseError as e:
+            logger.warning("BCL: logout token ongeldig (handtekening/claims): %s", e)
+            return None
+        except Exception as e:
+            logger.warning("BCL: logout token kon niet gevalideerd worden: %s", e)
+            return None
+
+        # iss moet de auth server zijn.
+        try:
+            issuer = self.auth_server.load_server_metadata().get("issuer")
+        except Exception:
+            issuer = current_app.config.get("OAUTH_BASE_URL")
+        if issuer and claims.get("iss") != issuer:
+            logger.warning("BCL: iss %r != verwachte issuer %r", claims.get("iss"), issuer)
+            return None
+
+        # aud moet dit client_id bevatten (string of lijst).
+        aud = claims.get("aud")
+        client_id = current_app.config.get("OAUTH_CLIENT_ID")
+        aud_ok = aud == client_id or (isinstance(aud, (list, tuple)) and client_id in aud)
+        if not aud_ok:
+            logger.warning("BCL: aud %r bevat client_id %r niet", aud, client_id)
+            return None
+
+        # events-claim moet het backchannel-logout event bevatten.
+        events = claims.get("events")
+        if not isinstance(events, dict) or BACKCHANNEL_LOGOUT_EVENT not in events:
+            logger.warning("BCL: events-claim mist het backchannel-logout event")
+            return None
+
+        # nonce is verboden in een logout token (§2.4).
+        if "nonce" in claims:
+            logger.warning("BCL: logout token bevat een nonce (verboden)")
+            return None
+
+        sub = claims.get("sub")
+        if not sub:
+            logger.warning("BCL: logout token mist sub (sid-only wordt niet ondersteund)")
+            return None
+        return str(sub)
+
+    def _mark_logged_out(self, sub):
+        """Zet de "uitgelogd"-markering in Redis. True bij succes, False zonder Redis."""
+        r = self._logout_redis()
+        if r is None:
+            return False
+        try:
+            ttl = int(current_app.config.get("OAUTH_LOGOUT_MARKER_TTL", 86400))
+            r.setex(self._bcl_key(sub), ttl, str(time.time()))
+            return True
+        except Exception as e:
+            logger.error("BCL: kon logout-markering niet zetten voor sub=%s: %s", sub, e)
+            return False
+
+    def _is_backchannel_logged_out(self):
+        """True als de huidige sessie ná een back-channel-logout-event is (moet sterven)."""
+        if "oauth_user" not in session:
+            return False
+        sub = str(session["oauth_user"].get("oauth_id") or "")
+        if not sub:
+            return False
+        r = self._logout_redis()
+        if r is None:
+            return False
+        try:
+            raw = r.get(self._bcl_key(sub))
+        except Exception as e:
+            logger.error("BCL: kon logout-markering niet lezen: %s", e)
+            return False
+        if raw is None:
+            return False
+        try:
+            marked_at = float(raw.decode() if isinstance(raw, bytes) else raw)
+        except (ValueError, AttributeError):
+            return True  # onleesbare markering → veiligheidshalve uitloggen
+        # Alleen beëindigen als de logout ná het login-moment van deze sessie kwam.
+        return marked_at >= (session.get("_login_at", 0) or 0)
+
+    @csrf_exempt
+    def _handle_backchannel_logout(self):
+        """OIDC Back-Channel Logout 1.0 §2.5 endpoint: verwerk een logout token."""
+        if not current_app.config.get("OAUTH_ENABLE_BACKCHANNEL_LOGOUT", True):
+            abort(404)
+
+        logout_token = request.form.get("logout_token")
+        if not logout_token:
+            return self._bcl_error("missing logout_token")
+
+        sub = self._validate_logout_token(logout_token)
+        if sub is None:
+            return self._bcl_error("invalid logout_token")
+
+        # Markeer de gebruiker als uitgelogd → al zijn sessies sterven bij hun volgende request.
+        marked = self._mark_logged_out(sub)
+
+        # Is het huidige request diezelfde gebruiker, wis dan meteen die sessie (best-effort).
+        try:
+            if "oauth_user" in session and str(session["oauth_user"].get("oauth_id")) == sub:
+                session.clear()
+        except Exception:
+            pass
+
+        if not marked:
+            logger.error(
+                "BCL ontvangen voor sub=%s maar geen Redis geconfigureerd — alleen het huidige "
+                "request kon worden uitgelogd. Zet OAUTH_LOGOUT_REDIS_URL (of SESSION_REDIS) voor "
+                "volledige logout van alle sessies.",
+                sub,
+            )
+
+        logger.info("Back-channel logout verwerkt voor sub=%s", sub)
+        resp = jsonify({"status": "ok"})
+        resp.headers["Cache-Control"] = "no-store"
+        return resp, 200
+
+    def _bcl_error(self, message):
+        """OIDC BCL §2.6 foutrespons (400, no-store)."""
+        logger.warning("Back-channel logout geweigerd: %s", message)
+        resp = jsonify({"error": "invalid_request", "error_description": message})
+        resp.headers["Cache-Control"] = "no-store"
+        return resp, 400
+
+    def _enforce_backchannel_logout(self):
+        """before_request: beëindig de sessie als er een back-channel-logout-event was.
+
+        Werkt voor zowel cookie- als server-side sessies: bij het volgende request van de
+        gebruiker wordt de sessie gewist. Idle sessies (geen requests) doen niets kwaads en
+        vervallen bij hun eigen expiry.
+        """
+        if not current_app.config.get("OAUTH_ENABLE_BACKCHANNEL_LOGOUT", True):
+            return None
+        if "oauth_user" not in session:
+            return None
+        # Auth-routes overslaan (voorkomt redirect-loops), net als _validate_session_token.
+        if request.endpoint and request.endpoint.startswith("auth."):
+            return None
+        if request.headers.get("Authorization", "").startswith("Bearer "):
+            return None
+        if not self._is_backchannel_logged_out():
+            return None
+        return self._reauth_or_redirect("Sessie beëindigd door back-channel logout")
+
     def _register_routes(self, app):
         """
         Register auth Blueprint with routes.
@@ -702,6 +950,12 @@ class RPRAuth:
             "/webhook/user-deleted",
             "webhook_user_deleted",
             self._handle_webhook_user_deleted,
+            methods=["POST"],
+        )
+        auth_bp.add_url_rule(
+            "/backchannel-logout",
+            "backchannel_logout",
+            self._handle_backchannel_logout,
             methods=["POST"],
         )
         auth_bp.add_url_rule(
@@ -835,6 +1089,26 @@ class RPRAuth:
             session.clear()
             return redirect(url_for(self.login_view))
 
+    def _reauth_or_redirect(self, log_message):
+        """Wis de sessie en stuur de gebruiker naar (her)authenticatie.
+
+        Gedeeld door de token-hervalidatie en de back-channel-logout-handhaving: honoreert
+        embedded (FiveM NUI) sessies (postMessage-signaal), XHR (401) en gewone navigatie
+        (redirect naar login met bewaarde ``next``).
+        """
+        was_embedded = session.get("rpr_embedded", False)
+        logger.info(log_message)
+        session.clear()
+        accept = request.headers.get("Accept", "")
+        is_xhr = request.headers.get("X-Requested-With") == "XMLHttpRequest" or "application/json" in accept
+        if was_embedded and not is_xhr:
+            return self._embedded_auth_signal("reauth")
+        if is_xhr:
+            return jsonify({"error": "Session expired"}), 401
+        session["next"] = request.url
+        session.modified = True
+        return redirect(url_for(self.login_view))
+
     def _validate_session_token(self):
         """
         Periodieke hervalidatie van het sessie-token bij de auth server.
@@ -866,21 +1140,9 @@ class RPRAuth:
                 return None
 
         if not self.validate_token():
-            # §6 laag-2: onthoud of dit een FiveM-iframe-sessie was vóór het wissen.
-            was_embedded = session.get('rpr_embedded', False)
-            logger.info('Sessie-token niet meer geldig, sessie gewist')
-            session.clear()
-            accept = request.headers.get('Accept', '')
-            is_xhr = request.headers.get('X-Requested-With') == 'XMLHttpRequest' or 'application/json' in accept
-            if was_embedded and not is_xhr:
-                # Embedded navigatie: signaleer de host-NUI om opnieuw in te loggen + te
-                # herbootstrappen, i.p.v. een in-CEF redirect naar de auth-server.
-                return self._embedded_auth_signal('reauth')
-            if is_xhr:
-                return jsonify({'error': 'Session expired'}), 401
-            session['next'] = request.url
-            session.modified = True
-            return redirect(url_for(self.login_view))
+            # §6 laag-2: _reauth_or_redirect honoreert embedded (FiveM NUI) sessies via een
+            # postMessage-signaal i.p.v. een in-CEF redirect naar de auth-server.
+            return self._reauth_or_redirect('Sessie-token niet meer geldig, sessie gewist')
 
         session['_token_validated_at'] = time.time()
         session.modified = True
