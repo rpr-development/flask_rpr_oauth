@@ -2,6 +2,8 @@
 Tests voor 2FA functionaliteit in Flask RPR OAuth
 """
 
+import time
+
 import pytest
 from flask import Flask, session
 from flask_rpr_oauth import RPRAuth, require_2fa, current_user, current_token
@@ -67,6 +69,10 @@ def auth_session(client):
         sess["oauth_permissions"] = ["read", "write"]
         sess["oauth_groups"] = ["users"]
         sess["twofa_validated"] = False
+        # Vers gevalideerd token: voorkomt dat de periodieke _validate_session_token-hook
+        # de auth server (netwerk) belt en de sessie wist tijdens deze 2FA-tests.
+        sess["_login_at"] = time.time()
+        sess["_token_validated_at"] = time.time()
     return client
 
 
@@ -88,6 +94,10 @@ def auth_session_with_2fa(client):
         sess["oauth_permissions"] = ["read", "write"]
         sess["oauth_groups"] = ["users"]
         sess["twofa_validated"] = True
+        # Vers gevalideerd token: voorkomt dat de periodieke _validate_session_token-hook
+        # de auth server (netwerk) belt en de sessie wist tijdens deze 2FA-tests.
+        sess["_login_at"] = time.time()
+        sess["_token_validated_at"] = time.time()
     return client
 
 
