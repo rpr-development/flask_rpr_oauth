@@ -11,7 +11,10 @@ Een Flask extensie voor OAuth 2.0 / OpenID Connect authenticatie met [auth.rolep
 - 🤖 **M2M Token Support** - Client credentials flow voor server-to-server
 - 🎫 **Token Management** - Automatische token refresh en validatie
 - 🔑 **Two-Factor Authentication** - Volledige 2FA integratie met `@require_2fa` decorator
-- 🪝 **Webhook Support** - Real-time token revocation en gebruiker updates
+- 📣 **Back-channel logout** - Centrale logout/ban werkt direct door in je app (OIDC Back-Channel Logout 1.0)
+- 🔔 **Security-events (SSF)** - Ondertekende RISC/CAEP-events van de auth server (RFC 8417/8935)
+- 🔁 **SCIM-provisioning** - Automatische user-sync vanuit de auth server (RFC 7643/7644, opt-in)
+- 🪝 **Webhook Support (legacy)** - Oude ongetekende hooks; opgevolgd door de security-events
 - ⚡ **Redis Sessions** - Optionele server-side session storage
 - 🛡️ **Decorators** - Session-based én stateless permission checks
 
@@ -161,7 +164,10 @@ app.config['OAUTH_AUTO_VALIDATE'] = True
 # geweigerd (401). Tokens zonder aud (legacy) blijven overal geldig.
 app.config['OAUTH_RESOURCE_ID'] = 'https://gms.roleplayreality.nl'
 
-# Webhook secret voor validatie
+# Webhook secret voor validatie (legacy webhooks; zie ook de sectie
+# "Signalen van de auth-server" voor de opvolgers BCL/SSF/SCIM en hun
+# instellingen: OAUTH_ENABLE_BACKCHANNEL_LOGOUT, OAUTH_LOGOUT_REDIS_URL,
+# OAUTH_ENABLE_SSF, OAUTH_SSF_AUDIENCE, OAUTH_ENABLE_SCIM, OAUTH_ON_*-callbacks)
 app.config['WEBHOOK_SECRET'] = 'your-webhook-secret'
 
 # Partitioned cookies voor iframe/CHIPS ondersteuning (default: True)
@@ -206,8 +212,11 @@ De package registreert automatisch de volgende routes:
 - `GET /auth/refresh` - Refresh access token
 - `GET, POST /auth/session-bootstrap` - Bearer-based auto-login: zet een first-party sessie op vanuit een aangeleverd access token (via POST `access_token` (voorkeur) / GET-query / `Authorization: Bearer`), NIET een code. Alleen actief als `OAUTH_ENABLE_SESSION_BOOTSTRAP=True` (of de oude `OAUTH_ENABLE_FIVEM_BOOTSTRAP=True`).
 - `GET, POST /auth/fivem-bootstrap` - **Deprecated** alias voor `/auth/session-bootstrap` (zelfde handler), behouden voor bestaande configs.
-- `POST /auth/webhook/token-revoked` - Webhook voor token revocation
-- `POST /auth/webhook/user-deleted` - Webhook voor user deletion
+- `POST /auth/backchannel-logout` - Ontvanger voor ondertekende logout tokens (OIDC Back-Channel Logout 1.0); default aan
+- `POST /auth/ssf` - Gedeelde ontvanger voor Security Event Tokens (SSF/RISC/CAEP, RFC 8417); default aan
+- `POST /scim/v2/Users` en `GET, PUT, DELETE /scim/v2/Users/<id>` - SCIM 2.0-provisioning; alleen actief met `OAUTH_ENABLE_SCIM=True`
+- `POST /auth/webhook/token-revoked` - **Legacy** webhook voor token revocation (opgevolgd door `/auth/ssf`)
+- `POST /auth/webhook/user-deleted` - **Legacy** webhook voor user deletion (opgevolgd door `/auth/ssf`)
 
 ## Current User
 
@@ -544,7 +553,131 @@ Session(app)
 auth = RPRAuth(app)
 ```
 
-## Webhooks
+## Signalen van de auth-server (back-channel logout & security-events)
+
+De auth-server duwt belangrijke gebeurtenissen actief naar je app, buiten de browser om:
+uitloggen, een ban, een verwijderd account of een gewijzigd wachtwoord werkt zo binnen
+een minuut door in je applicatie. De package registreert de ontvangers automatisch; jij
+configureert alleen (optioneel) callbacks. De berichten zijn **ondertekende JWT's**
+(RS256, dezelfde JWKS als de id_tokens) — er is dus géén gedeeld secret nodig: de
+handtekening ís de authenticatie. De package valideert handtekening, `iss` (de
+discovery-issuer), `aud` en de events-claim; alles wat niet klopt wordt met 400 geweigerd.
+
+### Back-channel logout (OIDC Back-Channel Logout 1.0)
+
+Bij centraal uitloggen, een ban of REVIEW-status POST de auth-server een `logout_token`
+naar `POST /auth/backchannel-logout`. De package beëindigt daarna álle sessies van die
+gebruiker: er komt een logout-markering in Redis en elke sessie sterft bij zijn
+eerstvolgende request (een `before_request`-check).
+
+```python
+# Default AAN. Redis is nodig om álle sessies te raken; zonder Redis kan alleen
+# de sessie van het huidige request beëindigd worden (wordt als error gelogd).
+app.config['OAUTH_ENABLE_BACKCHANNEL_LOGOUT'] = True
+app.config['OAUTH_LOGOUT_REDIS_URL'] = 'redis://localhost:6379/0'
+# Zonder OAUTH_LOGOUT_REDIS_URL wordt een geconfigureerde Flask-Session
+# SESSION_REDIS automatisch hergebruikt.
+
+# Levensduur van de logout-markering; moet elke sessie overleven die op het
+# moment van de logout bestond (default: 86400 = 24 uur).
+app.config['OAUTH_LOGOUT_MARKER_TTL'] = 86400
+```
+
+### Security-events (SSF — RFC 8417 SET's, RFC 8935 push)
+
+`POST /auth/ssf` is de gedeelde ontvanger voor Security Event Tokens van de auth-server.
+Registreer je app als **event-stream** in het admin-dashboard van de auth-server
+(Events & signalen → Event-streams) met deze URL en een audience; de event-stream-worker
+bezorgt elk event binnen een minuut (met retries bij storing).
+
+| Event | Wanneer | Automatische actie |
+| --- | --- | --- |
+| `account-disabled` (RISC) | Account geblokkeerd (ban/REVIEW) | Alle sessies beëindigd |
+| `account-purged` (RISC) | Account verwijderd (AVG) | Alle sessies beëindigd |
+| `session-revoked` (CAEP) | Sessie/tokens centraal ingetrokken | Alle sessies beëindigd |
+| `credential-change` (CAEP) | Wachtwoord of 2FA gewijzigd | Alle sessies beëindigd |
+
+Sessie-beëindiging gebeurt altijd (zelfde Redis-mechanisme als back-channel logout).
+Daarnaast kun je per event een callback registreren, bijvoorbeeld om lokale data op te
+ruimen bij een verwijderd account:
+
+```python
+def on_account_purged(sub, payload):
+    """sub = het user-id op de auth-server (string); payload = het event-object."""
+    LocalUser.query.filter_by(oauth_id=sub).delete()
+    db.session.commit()
+
+app.config['OAUTH_ON_ACCOUNT_PURGED'] = on_account_purged
+# Ook beschikbaar: OAUTH_ON_ACCOUNT_DISABLED, OAUTH_ON_SESSION_REVOKED,
+# OAUTH_ON_CREDENTIAL_CHANGE — allemaal (sub, payload). Een exception in een
+# callback wordt gelogd maar breekt de verwerking niet (fail-safe).
+
+app.config['OAUTH_ENABLE_SSF'] = True          # default AAN
+app.config['OAUTH_SSF_AUDIENCE'] = 'gms'       # verwachte `aud` in de SET;
+# default = OAUTH_CLIENT_ID. Moet gelijk zijn aan de audience van de
+# event-stream zoals op de auth-server geconfigureerd.
+```
+
+Onbekende event-types worden genegeerd; een geldige SET zonder enig bekend event geeft
+400, zodat de verzender het merkt. Succes = `202 Accepted` (RFC 8935).
+
+### SCIM-provisioning (RFC 7643/7644)
+
+Met SCIM duwt de auth-server het **user-bestand** actief naar je app: aanmaken, naam-/
+status-/groepswijzigingen en verwijdering, zodat lokale accounts nooit uit de pas lopen.
+De package levert de endpoints (`/scim/v2/Users[/<id>]`); jouw app implementeert alleen
+wat er lokaal moet gebeuren, via callbacks. **Default UIT** — zet 'm pas aan als de
+callbacks er zijn.
+
+Contract met de auth-server (de scim-worker):
+
+| Operatie | Betekenis | Verwacht gedrag |
+| --- | --- | --- |
+| `PUT /Users/<id>` | User aangemaakt/gewijzigd | **Upsert**: bestaat 'ie lokaal niet, maak 'm aan |
+| `POST /Users` | Create-fallback (`externalId` = user-id) | Zelfde als PUT |
+| `DELETE /Users/<id>` | User verwijderd | Idempotent: al weg = ook goed (204) |
+| `GET /Users/<id>` | AVG-export (privacy-worker) | Lokale data teruggeven, of 404 |
+
+```python
+app.config['OAUTH_ENABLE_SCIM'] = True
+# Aanbevolen: audience-binding aanzetten (RFC 8707), zodat alleen tokens die
+# voor déze app gemunt zijn worden geaccepteerd:
+app.config['OAUTH_AUDIENCE'] = 'https://gms.roleplayreality.nl'
+
+def scim_sync(user_id, resource):
+    """User aangemaakt of gewijzigd. resource = de SCIM User-resource (dict)."""
+    ...
+
+def scim_delete(user_id):
+    """User verwijderd op de auth-server. Idempotent implementeren."""
+    ...
+
+def scim_get(user_id):
+    """Optioneel: lokale data voor de AVG-export. None = gebruiker onbekend (404)."""
+    ...
+
+app.config['OAUTH_ON_SCIM_SYNC'] = scim_sync
+app.config['OAUTH_ON_SCIM_DELETE'] = scim_delete
+app.config['OAUTH_ON_SCIM_GET'] = scim_get      # optioneel
+```
+
+Beveiliging: elk SCIM-request vereist een Bearer **M2M-token** dat via introspectie
+valideert (inclusief de audience-check hierboven) én de provisioning-permissie draagt
+(`OAUTH_SCIM_PERMISSION`, default `auth.scim.provision` — de permissie van de
+scim-worker op de auth-server).
+
+Foutcontract: een exception in een callback geeft `500` — de scim-worker zet de job dan
+terug in de wachtrij en probeert het opnieuw (tot 5×). Een ontbrekende sync-/delete-callback
+geeft `501`; een `GET` zonder callback geeft `404` (= dit systeem heeft geen exportdata).
+Server-kant inschakelen: zet de SCIM-basis-URL op de applicatie in het
+admin-dashboard (Resource servers → Applicaties), bijv. `https://jouw-app/scim/v2`.
+
+## Webhooks (legacy)
+
+> ⚠️ **Verouderd.** Deze ongetekende webhooks zijn opgevolgd door de ondertekende
+> security-events hierboven (`/auth/ssf`). Ze blijven werken voor bestaande
+> installaties, maar nieuwe integraties gebruiken SSF; op de auth-server worden de
+> privacy-webhooks per systeem uitgefaseerd zodra dat systeem op SCIM/SSF over is.
 
 De package ondersteunt real-time updates via webhooks:
 
@@ -624,7 +757,15 @@ De package gebruikt pure Flask sessions voor authenticatie, zonder Flask-Login d
 5. Sla tokens + user data op in session
 6. Automatische token refresh bij bijna-expiry
 
-### Webhook Flow
+### Signalen-flow (BCL/SSF)
+
+1. Auth server POST een ondertekend token naar `/auth/backchannel-logout` of `/auth/ssf`
+2. Package valideert handtekening (JWKS), `iss`, `aud` en de events-claim
+3. Logout-markering voor die gebruiker gaat in Redis (+ optionele app-callback)
+4. Elke sessie van de gebruiker sterft bij zijn eerstvolgende request
+5. Antwoord aan de auth server: `200`/`202`; bij een fout `400` zodat de worker het merkt
+
+### Webhook Flow (legacy)
 
 1. OAuth server stuurt webhook bij token revocation of user deletion
 2. Webhook signature wordt gevalideerd
