@@ -28,7 +28,7 @@ from flask import (
 from markupsafe import escape
 from authlib.integrations.flask_client import OAuth
 from authlib.integrations.base_client.errors import MismatchingStateError
-from .models import OAuthUser, current_user
+from .models import OAuthUser
 from .exceptions import OAuthError, TokenExpiredError
 from .helpers import get_userinfo_from_token
 
@@ -1683,7 +1683,7 @@ class RPRAuth:
                 logger.info(f"[require_fresh_2fa] 2FA gevalideerd, {session_key}=True")
                 return None
             else:
-                logger.warning(f"[require_fresh_2fa] Terug van reauth maar 2FA niet gevalideerd")
+                logger.warning("[require_fresh_2fa] Terug van reauth maar 2FA niet gevalideerd")
                 return None  # Aanroeper handelt de foutmelding af
 
         # Eerste keer: stuur naar 2FA en dwing verse verificatie af
