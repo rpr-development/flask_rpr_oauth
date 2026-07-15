@@ -28,7 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`OAUTH_ON_ACCOUNT_PURGED`/`_DISABLED`/`_SESSION_REVOKED`/`_CREDENTIAL_CHANGE`, elk `(sub, payload)`).
   Config: `OAUTH_ENABLE_SSF` (default `True`), `OAUTH_SSF_AUDIENCE` (default `OAUTH_CLIENT_ID`).
   Ondersteunt RFC 9493 `sub_id` (iss_sub) als fallback voor `sub`. Opvolger van de ad-hoc
-  `/auth/webhook/token-revoked` + `/auth/webhook/user-deleted` (blijven vooralsnog bestaan).
+  `/auth/webhook/token-revoked` + `/auth/webhook/user-deleted` (in dezelfde release
+  verwijderd — zie Removed).
 - **RFC 9470 step-up-challenge** in `@require_2fa` (Bearer/API-modus): een geldig *user*-token
   met te laag auth-niveau (`acr=pwd`) krijgt nu een `401` met
   `WWW-Authenticate: Bearer error="insufficient_user_authentication", acr_values="mfa"`
@@ -53,6 +54,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   die op de JSON-body (`error == "mfa_required"`) checken, blijven ongewijzigd werken;
   consumers die hard op statuscode `403` checkten moeten `401` meenemen.
 - Improved pre-deploy scripts with more comprehensive checks
+
+### Removed
+- **Legacy webhooks `/auth/webhook/token-revoked` + `/auth/webhook/user-deleted`** en de
+  bijbehorende `WEBHOOK_SECRET`-config. Er heeft nooit een verzender bestaan (de auth server
+  heeft deze endpoints in zijn hele git-historie nooit aangeroepen) en geen enkele consumer
+  gebruikte ze; de functionaliteit is volledig gedekt door de ondertekende SSF-events op
+  `/auth/ssf` (session-revoked → uitloggen, account-purged → uitloggen + callback). Een
+  geconfigureerd `WEBHOOK_SECRET` in een app wordt vanaf nu simpelweg genegeerd.
 
 ### Fixed
 

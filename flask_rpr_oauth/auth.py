@@ -5,7 +5,6 @@ flask_rpr_oauth.auth
 Main OAuth authentication class.
 """
 
-import hmac
 import json
 import logging
 import re
@@ -214,7 +213,6 @@ class RPRAuth:
         # Stel defaults in
         app.config.setdefault("OAUTH_SCOPE", "openid profile email")
         app.config.setdefault("OAUTH_AUTO_VALIDATE", True)
-        app.config.setdefault("WEBHOOK_SECRET", None)
         app.config.setdefault("OAUTH_PARTITIONED_COOKIES", True)
         app.config.setdefault("OAUTH_TIMEOUT", 10)
         app.config.setdefault("OAUTH_TOKEN_REVALIDATE_INTERVAL", 300)
@@ -236,7 +234,7 @@ class RPRAuth:
         app.config.setdefault("OAUTH_LOGOUT_MARKER_TTL", 86400)
         # Shared Signals Framework (RFC 8417 SET + RFC 8935 push): registreer /auth/ssf, de
         # gedeelde ontvanger voor ondertekende Security Event Tokens (account-disabled/-purged,
-        # session-revoked, credential-change). Opvolger van de ad-hoc /auth/webhook/*. De
+        # session-revoked, credential-change). Opvolger van de verwijderde ad-hoc /auth/webhook/*. De
         # handtekening is de auth (zelfde JWKS als de id_tokens); OAUTH_SSF_AUDIENCE is de
         # verwachte `aud` in de SET (default = OAUTH_CLIENT_ID). Optionele per-event callbacks:
         # OAUTH_ON_ACCOUNT_PURGED/_DISABLED/_SESSION_REVOKED/_CREDENTIAL_CHANGE — elk (sub, payload).
@@ -688,58 +686,6 @@ class RPRAuth:
             logger.error(f"Token refresh error: {e}")
             raise TokenExpiredError("Token refresh mislukt")
 
-    def _verify_webhook_secret(self):
-        """Verifieer het webhook-secret (fail-closed, constant-time).
-
-        Zonder geconfigureerd ``WEBHOOK_SECRET`` worden webhooks geweigerd — anders
-        zou iedereen die de URL kent sessies van gebruikers kunnen invalideren.
-        De vergelijking is timing-safe (hmac.compare_digest).
-        """
-        configured = current_app.config.get("WEBHOOK_SECRET")
-        if not configured:
-            logger.error("Webhook geweigerd: WEBHOOK_SECRET is niet geconfigureerd")
-            return jsonify({"error": "Webhook not configured"}), 503
-        # compare_digest vereist gelijke types; coerce naar str zodat een als bytes
-        # geconfigureerd secret geen TypeError (500) geeft i.p.v. een nette 401.
-        if isinstance(configured, bytes):
-            configured = configured.decode("utf-8", "ignore")
-        provided_secret = request.headers.get("X-Webhook-Secret", "")
-        if not hmac.compare_digest(provided_secret, configured):
-            return jsonify({"error": "Invalid secret"}), 401
-        return None
-
-    def _handle_webhook_token_revoked(self):
-        """Webhook for token revocation."""
-        error_response = self._verify_webhook_secret()
-        if error_response:
-            return error_response
-
-        data = request.get_json(silent=True) or {}
-        oauth_id = data.get("sub")
-
-        if current_user.is_authenticated and current_user.oauth_id == oauth_id:
-            user_id = current_user.oauth_id  # capture before session.clear()
-            session.clear()
-            logger.info("User %s uitgelogd door token revocation", user_id)
-
-        return jsonify({"status": "success"})
-
-    def _handle_webhook_user_deleted(self):
-        """Webhook for user deletion."""
-        error_response = self._verify_webhook_secret()
-        if error_response:
-            return error_response
-
-        data = request.get_json(silent=True) or {}
-        oauth_id = data.get("sub")
-
-        if current_user.is_authenticated and current_user.oauth_id == oauth_id:
-            user_id = current_user.oauth_id  # capture before session.clear()
-            session.clear()
-            logger.info("User %s uitgelogd door account deletion", user_id)
-
-        return jsonify({"status": "success"})
-
     # ------------------------------------------------------------------
     # OIDC Back-Channel Logout 1.0 (ontvanger)
     # ------------------------------------------------------------------
@@ -972,7 +918,8 @@ class RPRAuth:
         een ``set``/``logout_token`` form-veld), valideert 'm via ``_validate_set`` en routeert
         op event-type: elk bekend event beëindigt de sessie(s) van de gebruiker (mark_logged_out
         → re-auth bij het volgende request); ``account-purged``/``-disabled``/``credential-change``
-        roepen daarnaast een optionele app-callback aan. Opvolger van de ad-hoc ``/auth/webhook/*``.
+        roepen daarnaast een optionele app-callback aan. Opvolger van de verwijderde ad-hoc
+        ``/auth/webhook/*``-endpoints.
         """
         if not current_app.config.get("OAUTH_ENABLE_SSF", True):
             abort(404)
@@ -1217,18 +1164,6 @@ class RPRAuth:
             "fivem_bootstrap",
             self._handle_session_bootstrap,
             methods=["GET", "POST"],
-        )
-        auth_bp.add_url_rule(
-            "/webhook/token-revoked",
-            "webhook_token_revoked",
-            self._handle_webhook_token_revoked,
-            methods=["POST"],
-        )
-        auth_bp.add_url_rule(
-            "/webhook/user-deleted",
-            "webhook_user_deleted",
-            self._handle_webhook_user_deleted,
-            methods=["POST"],
         )
         auth_bp.add_url_rule(
             "/backchannel-logout",

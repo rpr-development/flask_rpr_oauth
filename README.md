@@ -14,7 +14,6 @@ Een Flask extensie voor OAuth 2.0 / OpenID Connect authenticatie met [auth.rolep
 - 📣 **Back-channel logout** - Centrale logout/ban werkt direct door in je app (OIDC Back-Channel Logout 1.0)
 - 🔔 **Security-events (SSF)** - Ondertekende RISC/CAEP-events van de auth server (RFC 8417/8935)
 - 🔁 **SCIM-provisioning** - Automatische user-sync vanuit de auth server (RFC 7643/7644, opt-in)
-- 🪝 **Webhook Support (legacy)** - Oude ongetekende hooks; opgevolgd door de security-events
 - ⚡ **Redis Sessions** - Optionele server-side session storage
 - 🛡️ **Decorators** - Session-based én stateless permission checks
 
@@ -164,11 +163,10 @@ app.config['OAUTH_AUTO_VALIDATE'] = True
 # geweigerd (401). Tokens zonder aud (legacy) blijven overal geldig.
 app.config['OAUTH_RESOURCE_ID'] = 'https://gms.roleplayreality.nl'
 
-# Webhook secret voor validatie (legacy webhooks; zie ook de sectie
-# "Signalen van de auth-server" voor de opvolgers BCL/SSF/SCIM en hun
-# instellingen: OAUTH_ENABLE_BACKCHANNEL_LOGOUT, OAUTH_LOGOUT_REDIS_URL,
-# OAUTH_ENABLE_SSF, OAUTH_SSF_AUDIENCE, OAUTH_ENABLE_SCIM, OAUTH_ON_*-callbacks)
-app.config['WEBHOOK_SECRET'] = 'your-webhook-secret'
+# Signalen van de auth server (back-channel logout, security-events, SCIM):
+# zie de sectie "Signalen van de auth-server" verderop voor
+# OAUTH_ENABLE_BACKCHANNEL_LOGOUT, OAUTH_LOGOUT_REDIS_URL, OAUTH_ENABLE_SSF,
+# OAUTH_SSF_AUDIENCE, OAUTH_ENABLE_SCIM en de OAUTH_ON_*-callbacks.
 
 # Partitioned cookies voor iframe/CHIPS ondersteuning (default: True)
 # Aanbevolen aan te laten voor applicaties die in iframe kunnen draaien
@@ -215,8 +213,6 @@ De package registreert automatisch de volgende routes:
 - `POST /auth/backchannel-logout` - Ontvanger voor ondertekende logout tokens (OIDC Back-Channel Logout 1.0); default aan
 - `POST /auth/ssf` - Gedeelde ontvanger voor Security Event Tokens (SSF/RISC/CAEP, RFC 8417); default aan
 - `POST /scim/v2/Users` en `GET, PUT, DELETE /scim/v2/Users/<id>` - SCIM 2.0-provisioning; alleen actief met `OAUTH_ENABLE_SCIM=True`
-- `POST /auth/webhook/token-revoked` - **Legacy** webhook voor token revocation (opgevolgd door `/auth/ssf`)
-- `POST /auth/webhook/user-deleted` - **Legacy** webhook voor user deletion (opgevolgd door `/auth/ssf`)
 
 ## Current User
 
@@ -672,51 +668,6 @@ geeft `501`; een `GET` zonder callback geeft `404` (= dit systeem heeft geen exp
 Server-kant inschakelen: zet de SCIM-basis-URL op de applicatie in het
 admin-dashboard (Resource servers → Applicaties), bijv. `https://jouw-app/scim/v2`.
 
-## Webhooks (legacy)
-
-> ⚠️ **Verouderd.** Deze ongetekende webhooks zijn opgevolgd door de ondertekende
-> security-events hierboven (`/auth/ssf`). Ze blijven werken voor bestaande
-> installaties, maar nieuwe integraties gebruiken SSF; op de auth-server worden de
-> privacy-webhooks per systeem uitgefaseerd zodra dat systeem op SCIM/SSF over is.
-
-De package ondersteunt real-time updates via webhooks:
-
-### Token Revocation
-
-Wanneer een token wordt ingetrokken op de OAuth server:
-
-```json
-POST /auth/webhook/token-revoked
-{
-  "sub": "12345"
-}
-```
-
-De gebruiker wordt automatisch uitgelogd als deze ingelogd is.
-
-### User Deletion
-
-Wanneer een gebruiker wordt verwijderd:
-
-```json
-POST /auth/webhook/user-deleted
-{
-  "sub": "12345"
-}
-```
-
-De gebruiker wordt automatisch uitgelogd als deze ingelogd is.
-
-### Webhook Beveiliging
-
-Configureer een webhook secret op de OAuth server en in je app:
-
-```python
-app.config['WEBHOOK_SECRET'] = 'your-webhook-secret'
-```
-
-De webhook wordt gevalideerd via de `X-Webhook-Secret` header.
-
 ## Error Handling
 
 De package gooit custom exceptions die je kunt afhandelen:
@@ -764,14 +715,6 @@ De package gebruikt pure Flask sessions voor authenticatie, zonder Flask-Login d
 3. Logout-markering voor die gebruiker gaat in Redis (+ optionele app-callback)
 4. Elke sessie van de gebruiker sterft bij zijn eerstvolgende request
 5. Antwoord aan de auth server: `200`/`202`; bij een fout `400` zodat de worker het merkt
-
-### Webhook Flow (legacy)
-
-1. OAuth server stuurt webhook bij token revocation of user deletion
-2. Webhook signature wordt gevalideerd
-3. User wordt gezocht in actieve sessions
-4. Session wordt cleared
-5. User is uitgelogd
 
 ## Quick Reference
 
@@ -896,7 +839,7 @@ Maak release notes aan op GitHub met changelog:
 - Gebruik altijd HTTPS in productie
 - Sla `OAUTH_CLIENT_SECRET` veilig op (environment variables)
 - Gebruik sterke `SECRET_KEY` voor Flask sessions
-- Configureer `OAUTH_WEBHOOK_SECRET` voor webhook validatie
+- Configureer Redis (`OAUTH_LOGOUT_REDIS_URL` of `SESSION_REDIS`) zodat back-channel logout en security-events álle sessies kunnen beëindigen
 - Gebruik Redis sessions in productie (server-side storage)
 - Valideer altijd permissions server-side (niet alleen in templates)
 

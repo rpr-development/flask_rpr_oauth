@@ -40,9 +40,6 @@ app.config["SESSION_USE_SIGNER"] = True
 app.config["SESSION_KEY_PREFIX"] = "myapp:"
 app.config["SESSION_REDIS"] = redis.from_url("redis://localhost:6379/0")
 
-# Webhook configuratie
-app.config["WEBHOOK_SECRET"] = os.environ["WEBHOOK_SECRET"]
-
 # Initialiseer session
 Session(app)
 
