@@ -42,6 +42,11 @@ def app():
             "twofa": current_user.twofa_validated if current_user.is_authenticated else False,
         }
 
+    # _handle_callback redirect't hierheen na een succesvolle login (geen 'next' in sessie).
+    @app.route("/")
+    def index():
+        return "home"
+
     return app
 
 
@@ -145,7 +150,9 @@ def test_require_2fa_decorator_without_2fa(auth_session):
 
             mock_validate.return_value = False
             # Mock de OAuth redirect
-            mock_reauth.return_value = redirect("https://auth.test.nl/oauth/authorize?acr_values=mfa")
+            mock_reauth.return_value = redirect(
+                "https://auth.test.nl/oauth/authorize?acr_values=mfa"
+            )
 
             response = auth_session.get("/sensitive", follow_redirects=False)
 
@@ -292,77 +299,67 @@ def test_require_2fa_bearer_invalid_token(mock_userinfo, client):
     assert response.status_code == 401
 
 
-@pytest.mark.skip(reason="Complex mocking - needs refactor")
 def test_callback_saves_2fa_status(app, client):
-    """Test of OAuth callback de 2FA status opslaat."""
-    with app.app_context():
-        with patch("flask_rpr_oauth.auth.OAuth") as mock_oauth:
-            # Mock OAuth response met 2FA
-            mock_auth_server = Mock()
-            mock_auth_server.authorize_access_token.return_value = {
+    """Test of OAuth callback de 2FA status opslaat.
+
+    Vervangt `rpr_auth.auth_server` (i.p.v. de hele `OAuth`-klasse of een tweede
+    `RPRAuth(app)` te mocken/re-initen — dat laatste botst met Flask's
+    add_url_rule, dat dezelfde endpointnamen niet twee keer accepteert) door een
+    kale Mock. `_handle_callback` roept alleen `authorize_access_token()` en
+    `userinfo()` aan op dat object, dus dat volstaat.
+    """
+    rpr_auth = app.extensions["rpr_auth"]
+    rpr_auth.auth_server = Mock(
+        authorize_access_token=Mock(
+            return_value={
                 "access_token": "test-token",
                 "refresh_token": "test-refresh",
                 "token_type": "bearer",
                 "twofa_validated": True,
             }
-            mock_auth_server.userinfo.return_value = {
+        ),
+        userinfo=Mock(
+            return_value={
                 "sub": "test-123",
                 "email": "test@example.com",
                 "given_name": "Test",
                 "family_name": "User",
                 "permissions": ["read"],
                 "groups": ["users"],
+                "acr": "mfa",
             }
+        ),
+    )
 
-            # Setup mock
-            mock_oauth_instance = Mock()
-            mock_oauth_instance.register.return_value = mock_auth_server
-            mock_oauth.return_value = mock_oauth_instance
+    client.get("/auth/callback")
 
-            # Re-init auth met gemockte OAuth
-            auth = RPRAuth(app)
-            auth.auth_server = mock_auth_server
-
-            # Trigger callback
-            response = client.get("/auth/callback")
-
-            # Check session
-            with client.session_transaction() as sess:
-                assert sess.get("twofa_validated") is True
+    with client.session_transaction() as sess:
+        assert sess.get("twofa_validated") is True
 
 
-@pytest.mark.skip(reason="Complex mocking - needs refactor")
 def test_callback_saves_2fa_status_false(app, client):
-    """Test of OAuth callback de 2FA status opslaat als False."""
-    with app.app_context():
-        with patch("flask_rpr_oauth.auth.OAuth") as mock_oauth:
-            # Mock OAuth response zonder 2FA
-            mock_auth_server = Mock()
-            mock_auth_server.authorize_access_token.return_value = {
+    """Test of OAuth callback de 2FA status opslaat als False (zie vorige test)."""
+    rpr_auth = app.extensions["rpr_auth"]
+    rpr_auth.auth_server = Mock(
+        authorize_access_token=Mock(
+            return_value={
                 "access_token": "test-token",
                 "refresh_token": "test-refresh",
                 "token_type": "bearer",
                 "twofa_validated": False,
             }
-            mock_auth_server.userinfo.return_value = {
+        ),
+        userinfo=Mock(
+            return_value={
                 "sub": "test-123",
                 "email": "test@example.com",
                 "given_name": "Test",
                 "family_name": "User",
             }
+        ),
+    )
 
-            # Setup mock
-            mock_oauth_instance = Mock()
-            mock_oauth_instance.register.return_value = mock_auth_server
-            mock_oauth.return_value = mock_oauth_instance
+    client.get("/auth/callback")
 
-            # Re-init auth met gemockte OAuth
-            auth = RPRAuth(app)
-            auth.auth_server = mock_auth_server
-
-            # Trigger callback
-            response = client.get("/auth/callback")
-
-            # Check session
-            with client.session_transaction() as sess:
-                assert sess.get("twofa_validated") is False
+    with client.session_transaction() as sess:
+        assert sess.get("twofa_validated") is False

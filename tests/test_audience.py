@@ -62,12 +62,18 @@ class TestAudienceCheckUserinfo:
     def test_wrong_aud_rejected(self, app):
         """Token voor een andere resource → geweigerd (leidt tot 401 in de decorators)."""
         app.config["OAUTH_RESOURCE_ID"] = RESOURCE
-        with app.app_context(), patch("requests.get", return_value=_userinfo_response("https://intranet.test.nl")):
+        with (
+            app.app_context(),
+            patch("requests.get", return_value=_userinfo_response("https://intranet.test.nl")),
+        ):
             assert get_userinfo_from_token("tok-3") is None
 
     def test_no_resource_id_configured_no_enforcement(self, app):
         """Zonder OAUTH_RESOURCE_ID wordt niet gehandhaafd (opt-in)."""
-        with app.app_context(), patch("requests.get", return_value=_userinfo_response("https://intranet.test.nl")):
+        with (
+            app.app_context(),
+            patch("requests.get", return_value=_userinfo_response("https://intranet.test.nl")),
+        ):
             assert get_userinfo_from_token("tok-4") is not None
 
     def test_rejected_token_not_cached(self, app):

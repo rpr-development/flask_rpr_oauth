@@ -87,16 +87,6 @@ class OAuthUser:
         self._groups = groups or []
         self.claims = claims or {}
 
-    @property
-    def type(self):
-        """Alias for user_type."""
-        return self.user_type
-
-    @property
-    def status(self):
-        """Alias for user_status."""
-        return self.user_status
-
     def get_id(self):
         """Return unique identifier."""
         return self.oauth_id
@@ -112,11 +102,6 @@ class OAuthUser:
         if self.achternaam:
             return f"{self.voornaam} {self.achternaam[0]}."
         return self.voornaam
-
-    @property
-    def username(self):
-        """Alias for name."""
-        return self.name
 
     @property
     def full_name(self):
@@ -270,35 +255,35 @@ class _CurrentUserProxy:
         # Decorators als @login_required zetten g._rpr_token_info vóór de route wordt
         # aangeroepen, zodat current_user hier transparant werkt zonder sessie.
         try:
-            token_info = getattr(g, '_rpr_token_info', None)
+            token_info = getattr(g, "_rpr_token_info", None)
         except RuntimeError:
             return None  # buiten request context
 
-        if not token_info or token_info.get('token_type') == 'm2m':
+        if not token_info or token_info.get("token_type") == "m2m":
             return None
 
         return OAuthUser(
-            oauth_id=token_info.get('sub'),
-            email=token_info.get('email', ''),
-            voornaam=token_info.get('given_name', '') or token_info.get('firstname', ''),
-            achternaam=token_info.get('family_name', '') or token_info.get('lastname', ''),
-            teamspeak_id=token_info.get('teamspeak_id', ''),
-            discord_id=token_info.get('discord_id', ''),
-            ingame_phone=token_info.get('ingame_phone', ''),
-            fivem_role=token_info.get('fivem_role', ''),
-            name_prefix=token_info.get('name_prefix', ''),
-            email_verified=token_info.get('email_verified', False),
-            user_type=token_info.get('user_type', ''),
-            user_status=token_info.get('user_status', ''),
-            permissions=token_info.get('permissions', []),
-            groups=token_info.get('groups', []),
+            oauth_id=token_info.get("sub"),
+            email=token_info.get("email", ""),
+            voornaam=token_info.get("given_name", "") or token_info.get("firstname", ""),
+            achternaam=token_info.get("family_name", "") or token_info.get("lastname", ""),
+            teamspeak_id=token_info.get("teamspeak_id", ""),
+            discord_id=token_info.get("discord_id", ""),
+            ingame_phone=token_info.get("ingame_phone", ""),
+            fivem_role=token_info.get("fivem_role", ""),
+            name_prefix=token_info.get("name_prefix", ""),
+            email_verified=token_info.get("email_verified", False),
+            user_type=token_info.get("user_type", ""),
+            user_status=token_info.get("user_status", ""),
+            permissions=token_info.get("permissions", []),
+            groups=token_info.get("groups", []),
             claims=token_info,
         )
 
     def __setattr__(self, name, value):
         """Store enriched attributes in flask.g (per-request) instead of on the singleton."""
         try:
-            if not hasattr(g, '_user_extra'):
+            if not hasattr(g, "_user_extra"):
                 g._user_extra = {}
             g._user_extra[name] = value
         except RuntimeError:
@@ -308,7 +293,7 @@ class _CurrentUserProxy:
     def __getattr__(self, name):
         """Proxy attribute access: check g._user_extra first, then session-backed user."""
         try:
-            user_extra = getattr(g, '_user_extra', {})
+            user_extra = getattr(g, "_user_extra", {})
             if name in user_extra:
                 return user_extra[name]
         except RuntimeError:
@@ -362,7 +347,7 @@ class _CurrentTokenProxy:
 
     def _get_info(self):
         """Get token info from flask.g request context."""
-        return getattr(g, '_rpr_token_info', None)
+        return getattr(g, "_rpr_token_info", None)
 
     @property
     def is_authenticated(self):

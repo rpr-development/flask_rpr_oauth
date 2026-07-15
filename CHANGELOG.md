@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`POST /auth/logout`** naast de bestaande `GET`-variant (zelfde handler). Sinds de
+  RFC 7009-revocatie heeft een cross-site-triggerbare `GET /auth/logout` (bijv. via
+  `<img src>`) een écht server-side effect (refresh-token wordt ingetrokken); een
+  `POST` vanuit een CSRF-beschermd formulier voorkomt dat. `GET` blijft bestaan voor
+  bestaande navbar-`<a href>`-links.
+- README documenteert nu ook `OAUTH_TIMEOUT`, `OAUTH_TOKEN_REVALIDATE_INTERVAL`,
+  `OAUTH_POST_LOGOUT_REDIRECT_URI`, `OAUTH_USERINFO_CACHE_TTL`/`_MAXSIZE`,
+  `OAUTH_REQUIRE_2FA` en `OAUTH_RESOURCE_SCOPES_SUPPORTED` — deze config-keys bestonden
+  al in de code maar stonden nergens beschreven. Ook `current_user.name`/`.full_name`
+  (al langer in productiegebruik bij consumers) staan nu in de README.
+- `tests/test_models.py`: unit-tests voor `OAuthUser.name`/`.full_name`/`get_permissions()`/
+  `get_groups()`/`is_anonymous`, en voor de `current_user`/`current_token`-proxies
+  (sessie-pad, Bearer-token-fallback, M2M-uitsluiting, `g._user_extra`-verrijking,
+  `current_token.get()`/`__contains__`/`__repr__`) — `models.py` ging hiermee van ~36%
+  naar 88% dekking.
+- De twee overgeslagen tests in `tests/test_2fa.py` (`test_callback_saves_2fa_status(_false)`,
+  ooit gemarkeerd met `Complex mocking - needs refactor`) draaien nu echt: i.p.v. de hele
+  `OAuth`-klasse te mocken en `RPRAuth(app)` een tweede keer te initialiseren (wat op
+  dubbele Flask-route-registratie botste), vervangen ze `rpr_auth.auth_server` door een
+  kale `Mock()` op de al door de fixture geregistreerde instance.
 - **Token-revocatie bij logout (RFC 7009)**: `/auth/logout` trekt de sessietokens nu eerst
   server-naar-server in op het `revocation_endpoint` (voorkeur: het refresh token — access
   en refresh horen bij dezelfde token-registratie). Voorheen bleven de tokens (refresh: tot
@@ -61,9 +81,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (RFC 9470 step-up, zie Added). M2M-tokens blijven `403` (kunnen niet step-uppen). Consumers
   die op de JSON-body (`error == "mfa_required"`) checken, blijven ongewijzigd werken;
   consumers die hard op statuscode `403` checkten moeten `401` meenemen.
+- **Genormaliseerde 401-foutrespons bij een ongeldig/verlopen Bearer-token**: `login_required`,
+  `permission_required`, `any_permission_required`, `group_required` en `any_group_required`
+  gaven bij een ontbrekend/ongeldig token `{"error": "Invalid or expired token"}` terug — nu
+  `{"error": "invalid_token", "message": "Invalid or expired token"}`, gelijk aan wat
+  `require_2fa` al deed én aan de `error="invalid_token"` die de `WWW-Authenticate`-header
+  standaard al meestuurde (die twee kwamen niet overeen). Consumers die generiek op de
+  aanwezigheid van `message` checken blijven werken; een consument die specifiek matcht op
+  `error == "Invalid or expired token"` (in plaats van op de statuscode 401) moet
+  `error == "invalid_token"` gebruiken.
 - Improved pre-deploy scripts with more comprehensive checks
 
 ### Removed
+- **`GET /auth/fivem-bootstrap`** (deprecated alias) en de bijbehorende
+  `OAUTH_ENABLE_FIVEM_BOOTSTRAP`-config. Geen enkele consumer (RPR-GMS, RPR-Intranet,
+  rpr-tablet, rpr_core) gebruikt dit pad of deze vlag; de enige resterende verwijzing was
+  verouderde documentatie bij MEOS die nog het oude (vóór-generalisatie) contract beschreef
+  — dat contract wisselde een OAuth `code` in, terwijl de huidige handler een Bearer
+  `access_token` verwacht. Gebruik `/auth/session-bootstrap` (`OAUTH_ENABLE_SESSION_BOOTSTRAP`).
+- **`GET /auth/refresh`**. Ongebruikt door alle onderzochte consumers, en de foutafhandeling
+  klopte niet: het succespad gaf JSON terug, maar een falende refresh gooide een
+  `TokenExpiredError` die door de globale error-handler naar een **redirect** werd omgezet
+  i.p.v. een JSON-foutrespons. Tokenrefresh loopt bij alle consumers al via de
+  `before_request`-hervalidatie (`OAUTH_TOKEN_REVALIDATE_INTERVAL`) of via `/oauth/token`
+  met `grant_type=refresh_token`.
+- **`OAuthUser.type`/`.status`/`.username`** (ongedocumenteerde aliassen voor `user_type`/
+  `user_status`/`name`). Geen enkele onderzochte consumer gebruikte ze en ze hadden geen
+  testdekking. `.name` en `.full_name` blijven bestaan — die zijn wél in productiegebruik
+  (RPR-GMS, RPR-Intranet) en staan nu ook in de README.
+- `tests/quick_test.py`: ad-hoc script dat niet matchte met pytest's `python_files` (werd
+  dus nooit als test gecollecteerd) en volledig gedupliceerd was door `test_auth.py`.
 - **Legacy webhooks `/auth/webhook/token-revoked` + `/auth/webhook/user-deleted`** en de
   bijbehorende `WEBHOOK_SECRET`-config. Er heeft nooit een verzender bestaan (de auth server
   heeft deze endpoints in zijn hele git-historie nooit aangeroepen) en geen enkele consumer
@@ -72,7 +119,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   geconfigureerd `WEBHOOK_SECRET` in een app wordt vanaf nu simpelweg genegeerd.
 
 ### Fixed
-
+- README-voorbeeld in de SCIM-sectie zette `OAUTH_AUDIENCE` voor RFC 8707 audience-binding —
+  die config-key bestaat niet, de code leest uitsluitend `OAUTH_RESOURCE_ID`. Wie het
+  voorbeeld letterlijk volgde, kreeg dus stilzwijgend geen audience-binding.
 - `require_2fa_reauth()` stuurde onterecht `prompt=login` mee bij normale step-up authenticatie.
   Dit wiste de bestaande `2fa_verified`-sessie op de auth server, waardoor gebruikers die al 2FA
   hadden gedaan (bij een andere app) of ingelogd waren met een passkey toch opnieuw 2FA moesten

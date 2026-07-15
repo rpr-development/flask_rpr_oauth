@@ -13,8 +13,8 @@ from flask import Flask
 from flask_rpr_oauth import RPRAuth
 
 
-def _make_app(enable_bootstrap=False, legacy_flag=False):
-    """Create a test Flask app with optional bootstrap flag(s)."""
+def _make_app(enable_bootstrap=False):
+    """Create a test Flask app with the bootstrap flag set as requested."""
     app = Flask(__name__)
     app.config["SECRET_KEY"] = "test-secret"
     app.config["OAUTH_BASE_URL"] = "https://auth.test.nl"
@@ -23,8 +23,6 @@ def _make_app(enable_bootstrap=False, legacy_flag=False):
     app.config["OAUTH_REDIRECT_URI"] = "http://localhost/auth/callback"
     app.config["TESTING"] = True
     app.config["OAUTH_ENABLE_SESSION_BOOTSTRAP"] = bool(enable_bootstrap)
-    if legacy_flag:
-        app.config["OAUTH_ENABLE_FIVEM_BOOTSTRAP"] = True
 
     RPRAuth(app)
 
@@ -76,9 +74,7 @@ def test_bootstrap_success_populates_session_and_redirects_to_safe_next():
     app = _make_app(enable_bootstrap=True)
     client = app.test_client()
 
-    with patch(
-        "flask_rpr_oauth.auth.requests.get", return_value=_userinfo_response()
-    ) as mock_get:
+    with patch("flask_rpr_oauth.auth.requests.get", return_value=_userinfo_response()) as mock_get:
         resp = client.post(
             "/auth/session-bootstrap",
             data={"access_token": "at-123", "next": "/dashboard", "id_token": "id-123"},
@@ -126,9 +122,7 @@ def test_bootstrap_unsafe_next_redirects_to_root():
     client = app.test_client()
 
     with patch("flask_rpr_oauth.auth.requests.get", return_value=_userinfo_response()):
-        resp = client.get(
-            "/auth/session-bootstrap?access_token=at-123&next=//evil.example.com"
-        )
+        resp = client.get("/auth/session-bootstrap?access_token=at-123&next=//evil.example.com")
 
     assert resp.status_code == 303
     location = resp.headers["Location"]
@@ -186,31 +180,6 @@ def test_bootstrap_userinfo_failure_redirects_to_login():
     assert resp.headers["Location"].endswith("/auth/login")
     with client.session_transaction() as sess:
         assert "oauth_user" not in sess
-
-
-def test_fivem_bootstrap_alias_routes_to_same_handler():
-    """De deprecated /auth/fivem-bootstrap alias werkt nog en deelt de handler."""
-    app = _make_app(enable_bootstrap=True)
-    client = app.test_client()
-
-    with patch("flask_rpr_oauth.auth.requests.get", return_value=_userinfo_response()):
-        resp = client.get("/auth/fivem-bootstrap?access_token=at-123&next=/dashboard")
-
-    assert resp.status_code == 303
-    assert resp.headers["Location"].endswith("/dashboard")
-    with client.session_transaction() as sess:
-        assert sess["oauth_user"]["oauth_id"] == "user-123"
-
-
-def test_legacy_flag_enables_route():
-    """De oude OAUTH_ENABLE_FIVEM_BOOTSTRAP vlag activeert de route nog steeds."""
-    app = _make_app(enable_bootstrap=False, legacy_flag=True)
-    client = app.test_client()
-
-    with patch("flask_rpr_oauth.auth.requests.get", return_value=_userinfo_response()):
-        resp = client.get("/auth/session-bootstrap?access_token=at-123")
-
-    assert resp.status_code == 303
 
 
 # ── §6 laag-2: embedded step-up signaal ──────────────────────────────────────

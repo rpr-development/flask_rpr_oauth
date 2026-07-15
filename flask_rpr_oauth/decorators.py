@@ -12,7 +12,6 @@ from flask import abort, current_app, g, session, redirect, url_for, request, js
 from .models import current_user
 from .exceptions import PermissionDeniedError, GroupDeniedError
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -46,23 +45,116 @@ def _is_ajax_request():
     return "application/json" in accept
 
 
+def _request_uses_dpop():
+    """True als de request het token via de RFC 9449 ``DPoP``-scheme aanbiedt."""
+    return request.headers.get("Authorization", "").startswith("DPoP ")
+
+
 def _is_bearer_token_request():
-    """Check if request uses Bearer token authentication (API mode)."""
+    """Check of de request een token via de Authorization-header aanbiedt (API-mode).
+
+    Accepteert zowel ``Bearer`` (RFC 6750) als ``DPoP`` (RFC 9449); beide nemen het API-pad in
+    de decorators. De naam blijft ``_is_bearer_token_request`` voor achterwaartse compatibiliteit
+    (tests en externe imports patchen deze functie).
+    """
     auth_header = request.headers.get("Authorization", "")
-    return auth_header.startswith("Bearer ")
+    return auth_header.startswith("Bearer ") or auth_header.startswith("DPoP ")
 
 
 def _get_bearer_token():
-    """Extract Bearer token from Authorization header."""
+    """Extraheer het access token uit de Authorization-header (``Bearer``- of ``DPoP``-scheme)."""
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
         return auth_header[7:]  # Remove 'Bearer '
+    if auth_header.startswith("DPoP "):
+        return auth_header[5:]  # Remove 'DPoP '
     return None
 
 
+def _request_htu():
+    """De canonieke URL van deze request voor de DPoP ``htu``-controle (zonder query/fragment).
+
+    Voorkeur voor ``OAUTH_RESOURCE_ID`` (de externe resource-URI van deze app) + het request-pad,
+    zodat de controle klopt achter een TLS-terminerende proxy (Cloudflare) waar ``request.url``
+    de interne http-URL zou geven. Zonder config: de request-host.
+    """
+    base = current_app.config.get("OAUTH_RESOURCE_ID") or request.host_url
+    return base.rstrip("/") + request.path
+
+
+def _dpop_replay_redis():
+    """Optionele Redis voor de DPoP jti-replaycache. Hergebruikt de al-geconfigureerde
+    back-channel-logout-client van de RPRAuth-extensie; None (fail-open) als die er niet is."""
+    rpr_auth = current_app.extensions.get("rpr_auth")
+    if rpr_auth is not None and hasattr(rpr_auth, "_logout_redis"):
+        try:
+            return rpr_auth._logout_redis()
+        except Exception:
+            return None
+    return None
+
+
+def _authenticate_dpop_token(token):
+    """Valideer een DPoP-request (RFC 9449 §7.1): proof lokaal valideren + de ``cnf.jkt`` uit
+    introspectie vergelijken. Returnt de introspectie-dict (permissions/groups/acr/sub) of None.
+    """
+    from .dpop import DPoPError, validate_dpop_proof
+    from .helpers import _introspect_token
+
+    oauth_base_url = current_app.config.get("OAUTH_BASE_URL")
+    if not oauth_base_url:
+        logger.error("[dpop] OAUTH_BASE_URL niet geconfigureerd")
+        return None
+
+    # De proof wordt per request gevalideerd (nooit gecachet): htm/htu/jti zijn request-gebonden.
+    try:
+        proof_jkt = validate_dpop_proof(
+            request.headers.get("DPoP"),
+            request.method,
+            _request_htu(),
+            token,
+            redis=_dpop_replay_redis(),
+        )
+    except DPoPError as e:
+        logger.info("[dpop] Proof geweigerd: %s", e)
+        return None
+
+    # Introspectie (client-geauthenticeerd) levert active + permissions/groups/acr én cnf.jkt.
+    data = _introspect_token(token, oauth_base_url)
+    if not data:
+        return None
+
+    bound_jkt = (data.get("cnf") or {}).get("jkt")
+    if not bound_jkt:
+        # Token is niet DPoP-gebonden maar wordt wél via de DPoP-scheme aangeboden → weiger.
+        # Anders zou een gewoon Bearer-token als "DPoP" met een eigen sleutel de bindingcontrole
+        # omzeilen.
+        logger.warning("[dpop] Token is niet DPoP-gebonden maar aangeboden via het DPoP-scheme")
+        return None
+    if bound_jkt != proof_jkt:
+        logger.warning("[dpop] Thumbprint-mismatch: proof=%s token=%s", proof_jkt, bound_jkt)
+        return None
+
+    return data
+
+
 def _get_userinfo_from_token(token):
-    """Get userinfo from Bearer token via OAuth server."""
+    """Valideer het token en geef de userinfo/introspectie-dict terug (of None).
+
+    - **DPoP-scheme** (``Authorization: DPoP``): valideer de proof lokaal tegen deze request en
+      eis dat de proof-thumbprint matcht met de ``cnf.jkt`` uit introspectie.
+    - **Bearer-scheme met ``OAUTH_REQUIRE_DPOP``**: geweigerd — deze resource server accepteert
+      alleen sender-constrained tokens.
+    - **Bearer-scheme anders**: ongewijzigd via userinfo-first/introspectie-fallback.
+    """
     from .helpers import get_userinfo_from_token
+
+    if _request_uses_dpop():
+        return _authenticate_dpop_token(token)
+
+    if current_app.config.get("OAUTH_REQUIRE_DPOP"):
+        logger.info("[dpop] Bearer-token geweigerd op %s: OAUTH_REQUIRE_DPOP staat aan", request.path)
+        return None
 
     return get_userinfo_from_token(token)
 
@@ -88,11 +180,19 @@ def _bearer_unauthorized(payload, *, error_code="invalid_token", acr_values=None
     """
     response = jsonify(payload)
     response.status_code = 401
-    challenge = f'Bearer resource_metadata="{_resource_metadata_url()}"'
+    # RFC 9449 §7.1: gebruikte de client het DPoP-scheme (of eist deze RS DPoP), dan is de
+    # challenge een DPoP-challenge met een `algs`-lijst; anders de bestaande Bearer-challenge.
+    use_dpop = _request_uses_dpop() or bool(current_app.config.get("OAUTH_REQUIRE_DPOP"))
+    scheme = "DPoP" if use_dpop else "Bearer"
+    challenge = f'{scheme} resource_metadata="{_resource_metadata_url()}"'
     if error_code:
         challenge += f', error="{error_code}"'
     if acr_values:
         challenge += f', acr_values="{acr_values}"'
+    if use_dpop:
+        from .dpop import DPOP_SIGNING_ALGS
+
+        challenge += f', algs="{" ".join(DPOP_SIGNING_ALGS)}"'
     response.headers["WWW-Authenticate"] = challenge
     return response
 
@@ -124,7 +224,9 @@ def login_required(f):
             userinfo = _get_userinfo_from_token(token)
 
             if not userinfo:
-                return _bearer_unauthorized({"error": "Invalid or expired token"})
+                return _bearer_unauthorized(
+                    {"error": "invalid_token", "message": "Invalid or expired token"}
+                )
 
             # Store token info in flask.g for current_token proxy
             g._rpr_token_info = userinfo
@@ -190,7 +292,9 @@ def permission_required(permission=None, **method_permissions):
                         token = _get_bearer_token()
                         userinfo = _get_userinfo_from_token(token)
                         if not userinfo:
-                            return _bearer_unauthorized({"error": "Invalid or expired token"})
+                            return _bearer_unauthorized(
+                                {"error": "invalid_token", "message": "Invalid or expired token"}
+                            )
                         g._rpr_token_info = userinfo
                     return f(*args, **kwargs)
             else:
@@ -202,7 +306,9 @@ def permission_required(permission=None, **method_permissions):
                 userinfo = _get_userinfo_from_token(token)
 
                 if not userinfo:
-                    return _bearer_unauthorized({"error": "Invalid or expired token"})
+                    return _bearer_unauthorized(
+                        {"error": "invalid_token", "message": "Invalid or expired token"}
+                    )
 
                 # Check permission for API token
                 permissions = userinfo.get("permissions", [])
@@ -293,7 +399,9 @@ def any_permission_required(*permissions, **method_permissions):
                         token = _get_bearer_token()
                         userinfo = _get_userinfo_from_token(token)
                         if not userinfo:
-                            return _bearer_unauthorized({"error": "Invalid or expired token"})
+                            return _bearer_unauthorized(
+                                {"error": "invalid_token", "message": "Invalid or expired token"}
+                            )
                         g._rpr_token_info = userinfo
                     return f(*args, **kwargs)
                 # Parse comma-separated permissions
@@ -307,7 +415,9 @@ def any_permission_required(*permissions, **method_permissions):
                 userinfo = _get_userinfo_from_token(token)
 
                 if not userinfo:
-                    return _bearer_unauthorized({"error": "Invalid or expired token"})
+                    return _bearer_unauthorized(
+                        {"error": "invalid_token", "message": "Invalid or expired token"}
+                    )
 
                 user_permissions = userinfo.get("permissions", [])
 
@@ -323,7 +433,7 @@ def any_permission_required(*permissions, **method_permissions):
                             {
                                 "error": "Forbidden",
                                 "message": (
-                                    f'One of these permissions required: '
+                                    f"One of these permissions required: "
                                     f'{", ".join(required_permissions)}'
                                 ),
                                 "your_permissions": user_permissions,
@@ -401,7 +511,9 @@ def group_required(group=None, **method_groups):
                         token = _get_bearer_token()
                         userinfo = _get_userinfo_from_token(token)
                         if not userinfo:
-                            return _bearer_unauthorized({"error": "Invalid or expired token"})
+                            return _bearer_unauthorized(
+                                {"error": "invalid_token", "message": "Invalid or expired token"}
+                            )
                         g._rpr_token_info = userinfo
                     return f(*args, **kwargs)
             else:
@@ -413,7 +525,9 @@ def group_required(group=None, **method_groups):
                 userinfo = _get_userinfo_from_token(token)
 
                 if not userinfo:
-                    return _bearer_unauthorized({"error": "Invalid or expired token"})
+                    return _bearer_unauthorized(
+                        {"error": "invalid_token", "message": "Invalid or expired token"}
+                    )
 
                 # Check if M2M token (M2M tokens hebben geen groups)
                 if userinfo.get("token_type") == "m2m":
@@ -512,7 +626,9 @@ def any_group_required(*groups, **method_groups):
                         token = _get_bearer_token()
                         userinfo = _get_userinfo_from_token(token)
                         if not userinfo:
-                            return _bearer_unauthorized({"error": "Invalid or expired token"})
+                            return _bearer_unauthorized(
+                                {"error": "invalid_token", "message": "Invalid or expired token"}
+                            )
                         g._rpr_token_info = userinfo
                     return f(*args, **kwargs)
                 # Parse comma-separated groups
@@ -526,7 +642,9 @@ def any_group_required(*groups, **method_groups):
                 userinfo = _get_userinfo_from_token(token)
 
                 if not userinfo:
-                    return _bearer_unauthorized({"error": "Invalid or expired token"})
+                    return _bearer_unauthorized(
+                        {"error": "invalid_token", "message": "Invalid or expired token"}
+                    )
 
                 # Check if M2M token
                 if userinfo.get("token_type") == "m2m":
@@ -556,7 +674,7 @@ def any_group_required(*groups, **method_groups):
                             {
                                 "error": "Forbidden",
                                 "message": (
-                                    f'Membership in one of these groups required: '
+                                    f"Membership in one of these groups required: "
                                     f'{", ".join(required_groups)}'
                                 ),
                                 "your_groups": user_groups,
@@ -651,7 +769,15 @@ def require_2fa(f):
                     userinfo.get("sub"),
                     request.path,
                 )
-                return jsonify({"error": "mfa_required", "message": "M2M tokens cannot satisfy 2FA requirement"}), 403
+                return (
+                    jsonify(
+                        {
+                            "error": "mfa_required",
+                            "message": "M2M tokens cannot satisfy 2FA requirement",
+                        }
+                    ),
+                    403,
+                )
 
             acr = userinfo.get("acr", "pwd")
             if acr not in ("mfa", "phr"):
@@ -722,7 +848,9 @@ def user_only(f):
             token = _get_bearer_token()
             userinfo = _get_userinfo_from_token(token)
             if not userinfo:
-                return _bearer_unauthorized({"error": "Invalid or expired token"})
+                return _bearer_unauthorized(
+                    {"error": "invalid_token", "message": "Invalid or expired token"}
+                )
             if userinfo.get("token_type") == "m2m":
                 return (
                     jsonify(
@@ -752,7 +880,9 @@ def m2m_only(f):
             token = _get_bearer_token()
             userinfo = _get_userinfo_from_token(token)
             if not userinfo:
-                return _bearer_unauthorized({"error": "Invalid or expired token"})
+                return _bearer_unauthorized(
+                    {"error": "invalid_token", "message": "Invalid or expired token"}
+                )
             if userinfo.get("token_type") != "m2m":
                 return (
                     jsonify(

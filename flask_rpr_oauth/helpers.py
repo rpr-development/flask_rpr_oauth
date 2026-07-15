@@ -31,7 +31,7 @@ _userinfo_cache: Dict[str, Tuple[dict, float]] = {}
 _cache_lock = threading.Lock()
 
 # Defaults; overschrijfbaar via Flask config.
-_DEFAULT_CACHE_TTL = 60        # seconden — begrenst het revocatie-venster
+_DEFAULT_CACHE_TTL = 60  # seconden — begrenst het revocatie-venster
 _DEFAULT_CACHE_MAXSIZE = 1000  # max aantal tokens in de cache
 
 

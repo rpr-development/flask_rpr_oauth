@@ -195,8 +195,46 @@ app.config['OAUTH_PARTITIONED_COOKIES'] = True
 # Standaard AAN zodat onze apps direct in FiveM beschikbaar zijn; zet expliciet
 # op False als je deze flow niet wilt aanbieden.
 app.config['OAUTH_ENABLE_SESSION_BOOTSTRAP'] = True
-# Back-compat: de oude vlag werkt nog en activeert dezelfde route + alias.
-app.config['OAUTH_ENABLE_FIVEM_BOOTSTRAP'] = False
+
+# Vereist een verse 2FA-login bij /auth/login zelf (stuurt acr_values=mfa mee
+# op de allereerste authorize-redirect, i.p.v. pas bij een @require_2fa-route).
+# Default: False.
+app.config['OAUTH_REQUIRE_2FA'] = False
+
+# DPoP (RFC 9449, sender-constrained tokens). Presenteert een client een token via
+# `Authorization: DPoP <token>` + een `DPoP:`-proofheader, dan valideert de decorator-laag
+# de proof lokaal (tegen deze request-URL/-methode + ath) en eist dat de proof-thumbprint
+# matcht met de `cnf.jkt` uit introspectie. Zet je dit AAN, dan worden gewone Bearer-tokens
+# geweigerd (401 met een `WWW-Authenticate: DPoP`-challenge) — bedoeld voor resource servers
+# die uitsluitend sender-constrained API-/MCP-clients bedienen. Default UIT: Bearer blijft de
+# standaard (o.a. sessie-cookie- en FiveM-consumers). De optionele jti-replaycache hergebruikt
+# OAUTH_LOGOUT_REDIS_URL (of SESSION_REDIS); zonder Redis is de cache fail-open.
+app.config['OAUTH_REQUIRE_DPOP'] = False
+
+# Timeout (seconden) voor alle uitgaande HTTP-calls naar de auth-server
+# (userinfo, introspectie, token-revocatie, JWKS). Default: 10.
+app.config['OAUTH_TIMEOUT'] = 10
+
+# Interval (seconden) waarop de before_request-hook het sessie-token opnieuw
+# valideert bij de auth-server (/oauth/userinfo). 0 = elke request valideren.
+# Default: 300.
+app.config['OAUTH_TOKEN_REVALIDATE_INTERVAL'] = 300
+
+# Waar de auth-server na RP-Initiated Logout naartoe mag redirecten
+# (post_logout_redirect_uri, OIDC RP-Initiated Logout 1.0 §2). Optioneel; zonder
+# deze waarde toont de auth-server zijn eigen post-logout pagina.
+app.config['OAUTH_POST_LOGOUT_REDIRECT_URI'] = 'https://jouwapp.nl/'
+
+# In-memory cache voor /oauth/userinfo- en /oauth/introspect-resultaten, om niet
+# bij elke request een HTTP-round-trip naar de auth-server te maken. TTL wordt
+# nooit langer dan de resterende levensduur van het token zelf. Defaults: 60s / 1000 tokens.
+app.config['OAUTH_USERINFO_CACHE_TTL'] = 60
+app.config['OAUTH_USERINFO_CACHE_MAXSIZE'] = 1000
+
+# Scopes die je in het RFC 9728 protected-resource-metadata-document
+# (/.well-known/oauth-protected-resource) wilt adverteren. Zonder deze waarde
+# wordt OAUTH_SCOPE gebruikt.
+app.config['OAUTH_RESOURCE_SCOPES_SUPPORTED'] = ['openid', 'profile', 'email']
 
 # Session configuration (voor Redis sessions)
 app.config['SESSION_TYPE'] = 'redis'
@@ -211,10 +249,8 @@ De package registreert automatisch de volgende routes:
 
 - `GET /auth/login` - Start OAuth flow
 - `GET /auth/callback` - OAuth callback endpoint
-- `GET /auth/logout` - Logout: trekt de sessietokens in op de auth server (RFC 7009), wist de lokale sessie en start RP-Initiated Logout (`end_session`)
-- `GET /auth/refresh` - Refresh access token
-- `GET, POST /auth/session-bootstrap` - Bearer-based auto-login: zet een first-party sessie op vanuit een aangeleverd access token (via POST `access_token` (voorkeur) / GET-query / `Authorization: Bearer`), NIET een code. Alleen actief als `OAUTH_ENABLE_SESSION_BOOTSTRAP=True` (of de oude `OAUTH_ENABLE_FIVEM_BOOTSTRAP=True`).
-- `GET, POST /auth/fivem-bootstrap` - **Deprecated** alias voor `/auth/session-bootstrap` (zelfde handler), behouden voor bestaande configs.
+- `GET, POST /auth/logout` - Logout: trekt de sessietokens in op de auth server (RFC 7009), wist de lokale sessie en start RP-Initiated Logout (`end_session`). Beide methodes gebruiken dezelfde handler; gebruik `POST` (vanuit een CSRF-beschermd formulier) als je een cross-site-triggerbare `GET`-logout wilt vermijden.
+- `GET, POST /auth/session-bootstrap` - Bearer-based auto-login: zet een first-party sessie op vanuit een aangeleverd access token (via POST `access_token` (voorkeur) / GET-query / `Authorization: Bearer`), NIET een code. Alleen actief als `OAUTH_ENABLE_SESSION_BOOTSTRAP=True`.
 - `POST /auth/backchannel-logout` - Ontvanger voor ondertekende logout tokens (OIDC Back-Channel Logout 1.0); default aan
 - `POST /auth/ssf` - Gedeelde ontvanger voor Security Event Tokens (SSF/RISC/CAEP, RFC 8417); default aan
 - `POST /scim/v2/Users` en `GET, PUT, DELETE /scim/v2/Users/<id>` - SCIM 2.0-provisioning; alleen actief met `OAUTH_ENABLE_SCIM=True`
@@ -234,6 +270,7 @@ def profile():
         'email': current_user.email,
         'voornaam': current_user.voornaam,
         'achternaam': current_user.achternaam,
+        'full_name': current_user.full_name,
         'permissions': current_user._permissions,
         'groups': current_user._groups,
         'is_authenticated': current_user.is_authenticated,
@@ -249,6 +286,8 @@ current_user.oauth_id         # OAuth user ID
 current_user.email            # Email adres
 current_user.voornaam         # Voornaam
 current_user.achternaam       # Achternaam
+current_user.name             # Weergavenaam: voornaam + eerste letter achternaam ("Jan J.")
+current_user.full_name        # Volledige naam: voornaam + name_prefix (indien gezet) + achternaam
 current_user._permissions     # List van permission strings
 current_user._groups          # List van group strings
 current_user.is_authenticated # Boolean
@@ -643,7 +682,7 @@ Contract met de auth-server (de scim-worker):
 app.config['OAUTH_ENABLE_SCIM'] = True
 # Aanbevolen: audience-binding aanzetten (RFC 8707), zodat alleen tokens die
 # voor déze app gemunt zijn worden geaccepteerd:
-app.config['OAUTH_AUDIENCE'] = 'https://gms.roleplayreality.nl'
+app.config['OAUTH_RESOURCE_ID'] = 'https://gms.roleplayreality.nl'
 
 def scim_sync(user_id, resource):
     """User aangemaakt of gewijzigd. resource = de SCIM User-resource (dict)."""
@@ -741,6 +780,8 @@ current_user.id                # OAuth user ID
 current_user.email             # Email adres
 current_user.voornaam          # Voornaam
 current_user.achternaam        # Achternaam
+current_user.name              # Weergavenaam ("Jan J.")
+current_user.full_name         # Volledige naam
 current_user.is_authenticated  # Boolean
 current_user.twofa_validated   # Boolean - 2FA status
 current_user._permissions      # List[str]

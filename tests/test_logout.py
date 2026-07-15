@@ -6,7 +6,6 @@ from flask import Flask, session
 from flask_rpr_oauth import RPRAuth
 from flask_rpr_oauth import auth as auth_module
 
-
 ISSUER = "https://auth.test.nl"
 CLIENT_ID = "test-client"
 END_SESSION = f"{ISSUER}/oauth/end_session"
@@ -96,7 +95,10 @@ def test_logout_falls_back_to_access_token(client, captured_revoke):
     _login(client, with_refresh=False)
     client.get("/auth/logout")
 
-    assert captured_revoke.calls[0]["data"] == {"token": "at-123", "token_type_hint": "access_token"}
+    assert captured_revoke.calls[0]["data"] == {
+        "token": "at-123",
+        "token_type_hint": "access_token",
+    }
 
 
 def test_logout_clears_session_and_posts_to_end_session(app, client, captured_revoke):

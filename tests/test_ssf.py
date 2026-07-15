@@ -17,7 +17,6 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import serialization
 from authlib.jose import JsonWebKey, jwt as jose_jwt
 
-
 ISSUER = "https://auth.test.nl"
 CLIENT_ID = "test-client"
 KID = "test-kid"
@@ -50,9 +49,18 @@ class _FakeRedis:
         return self.store.get(key)
 
 
-def _build_set(private_pem, event_uri, *, aud=CLIENT_ID, sub="99", nonce=None, iss=ISSUER, kid=KID, sub_id=None):
+def _build_set(
+    private_pem, event_uri, *, aud=CLIENT_ID, sub="99", nonce=None, iss=ISSUER, kid=KID, sub_id=None
+):
     now = int(time.time())
-    payload = {"iss": iss, "aud": aud, "iat": now, "exp": now + 120, "jti": "xyz", "events": {event_uri: {}}}
+    payload = {
+        "iss": iss,
+        "aud": aud,
+        "iat": now,
+        "exp": now + 120,
+        "jti": "xyz",
+        "events": {event_uri: {}},
+    }
     if sub is not None:
         payload["sub"] = sub
     if sub_id is not None:

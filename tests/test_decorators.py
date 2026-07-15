@@ -74,10 +74,10 @@ class TestPermissionRequiredMethodSpecific:
         """Test GET request with correct permission."""
         userinfo = {"sub": "user1", "permissions": ["melding.view"], "token_type": "user"}
 
-        with patch(
-            "flask_rpr_oauth.decorators._is_bearer_token_request", return_value=True
-        ), patch("flask_rpr_oauth.decorators._get_bearer_token", return_value="token"), patch(
-            "flask_rpr_oauth.decorators._get_userinfo_from_token", return_value=userinfo
+        with (
+            patch("flask_rpr_oauth.decorators._is_bearer_token_request", return_value=True),
+            patch("flask_rpr_oauth.decorators._get_bearer_token", return_value="token"),
+            patch("flask_rpr_oauth.decorators._get_userinfo_from_token", return_value=userinfo),
         ):
             response = client.get("/melding")
             assert response.status_code == 200
@@ -86,10 +86,10 @@ class TestPermissionRequiredMethodSpecific:
         """Test POST request with correct permission."""
         userinfo = {"sub": "user1", "permissions": ["melding.edit"], "token_type": "user"}
 
-        with patch(
-            "flask_rpr_oauth.decorators._is_bearer_token_request", return_value=True
-        ), patch("flask_rpr_oauth.decorators._get_bearer_token", return_value="token"), patch(
-            "flask_rpr_oauth.decorators._get_userinfo_from_token", return_value=userinfo
+        with (
+            patch("flask_rpr_oauth.decorators._is_bearer_token_request", return_value=True),
+            patch("flask_rpr_oauth.decorators._get_bearer_token", return_value="token"),
+            patch("flask_rpr_oauth.decorators._get_userinfo_from_token", return_value=userinfo),
         ):
             response = client.post("/melding")
             assert response.status_code == 200
@@ -98,10 +98,10 @@ class TestPermissionRequiredMethodSpecific:
         """Test GET request with wrong permission returns 403."""
         userinfo = {"sub": "user1", "permissions": ["melding.edit"], "token_type": "user"}
 
-        with patch(
-            "flask_rpr_oauth.decorators._is_bearer_token_request", return_value=True
-        ), patch("flask_rpr_oauth.decorators._get_bearer_token", return_value="token"), patch(
-            "flask_rpr_oauth.decorators._get_userinfo_from_token", return_value=userinfo
+        with (
+            patch("flask_rpr_oauth.decorators._is_bearer_token_request", return_value=True),
+            patch("flask_rpr_oauth.decorators._get_bearer_token", return_value="token"),
+            patch("flask_rpr_oauth.decorators._get_userinfo_from_token", return_value=userinfo),
         ):
             response = client.get("/melding")
             assert response.status_code == 403
@@ -110,10 +110,10 @@ class TestPermissionRequiredMethodSpecific:
         """Test POST request with wrong permission returns 403."""
         userinfo = {"sub": "user1", "permissions": ["melding.view"], "token_type": "user"}
 
-        with patch(
-            "flask_rpr_oauth.decorators._is_bearer_token_request", return_value=True
-        ), patch("flask_rpr_oauth.decorators._get_bearer_token", return_value="token"), patch(
-            "flask_rpr_oauth.decorators._get_userinfo_from_token", return_value=userinfo
+        with (
+            patch("flask_rpr_oauth.decorators._is_bearer_token_request", return_value=True),
+            patch("flask_rpr_oauth.decorators._get_bearer_token", return_value="token"),
+            patch("flask_rpr_oauth.decorators._get_userinfo_from_token", return_value=userinfo),
         ):
             response = client.post("/melding")
             assert response.status_code == 403
@@ -122,10 +122,10 @@ class TestPermissionRequiredMethodSpecific:
         """Test that methods without specified permissions allow access."""
         userinfo = {"sub": "user1", "permissions": [], "token_type": "user"}
 
-        with patch(
-            "flask_rpr_oauth.decorators._is_bearer_token_request", return_value=True
-        ), patch("flask_rpr_oauth.decorators._get_bearer_token", return_value="token"), patch(
-            "flask_rpr_oauth.decorators._get_userinfo_from_token", return_value=userinfo
+        with (
+            patch("flask_rpr_oauth.decorators._is_bearer_token_request", return_value=True),
+            patch("flask_rpr_oauth.decorators._get_bearer_token", return_value="token"),
+            patch("flask_rpr_oauth.decorators._get_userinfo_from_token", return_value=userinfo),
         ):
             response = client.put("/partial")
             assert response.status_code == 200
@@ -138,10 +138,10 @@ class TestPermissionRequiredLegacy:
         """Test legacy single permission works for GET."""
         userinfo = {"sub": "user1", "permissions": ["admin.access"], "token_type": "user"}
 
-        with patch(
-            "flask_rpr_oauth.decorators._is_bearer_token_request", return_value=True
-        ), patch("flask_rpr_oauth.decorators._get_bearer_token", return_value="token"), patch(
-            "flask_rpr_oauth.decorators._get_userinfo_from_token", return_value=userinfo
+        with (
+            patch("flask_rpr_oauth.decorators._is_bearer_token_request", return_value=True),
+            patch("flask_rpr_oauth.decorators._get_bearer_token", return_value="token"),
+            patch("flask_rpr_oauth.decorators._get_userinfo_from_token", return_value=userinfo),
         ):
             response = client.get("/legacy")
             assert response.status_code == 200
@@ -150,10 +150,10 @@ class TestPermissionRequiredLegacy:
         """Test legacy single permission works for POST."""
         userinfo = {"sub": "user1", "permissions": ["admin.access"], "token_type": "user"}
 
-        with patch(
-            "flask_rpr_oauth.decorators._is_bearer_token_request", return_value=True
-        ), patch("flask_rpr_oauth.decorators._get_bearer_token", return_value="token"), patch(
-            "flask_rpr_oauth.decorators._get_userinfo_from_token", return_value=userinfo
+        with (
+            patch("flask_rpr_oauth.decorators._is_bearer_token_request", return_value=True),
+            patch("flask_rpr_oauth.decorators._get_bearer_token", return_value="token"),
+            patch("flask_rpr_oauth.decorators._get_userinfo_from_token", return_value=userinfo),
         ):
             response = client.post("/legacy")
             assert response.status_code == 200
@@ -166,10 +166,10 @@ class TestAnyPermissionRequiredMethodSpecific:
         """Test GET with one of the required permissions."""
         userinfo = {"sub": "user1", "permissions": ["view1"], "token_type": "user"}
 
-        with patch(
-            "flask_rpr_oauth.decorators._is_bearer_token_request", return_value=True
-        ), patch("flask_rpr_oauth.decorators._get_bearer_token", return_value="token"), patch(
-            "flask_rpr_oauth.decorators._get_userinfo_from_token", return_value=userinfo
+        with (
+            patch("flask_rpr_oauth.decorators._is_bearer_token_request", return_value=True),
+            patch("flask_rpr_oauth.decorators._get_bearer_token", return_value="token"),
+            patch("flask_rpr_oauth.decorators._get_userinfo_from_token", return_value=userinfo),
         ):
             response = client.get("/any-perm")
             assert response.status_code == 200
@@ -178,10 +178,10 @@ class TestAnyPermissionRequiredMethodSpecific:
         """Test POST with one of the required permissions."""
         userinfo = {"sub": "user1", "permissions": ["edit2"], "token_type": "user"}
 
-        with patch(
-            "flask_rpr_oauth.decorators._is_bearer_token_request", return_value=True
-        ), patch("flask_rpr_oauth.decorators._get_bearer_token", return_value="token"), patch(
-            "flask_rpr_oauth.decorators._get_userinfo_from_token", return_value=userinfo
+        with (
+            patch("flask_rpr_oauth.decorators._is_bearer_token_request", return_value=True),
+            patch("flask_rpr_oauth.decorators._get_bearer_token", return_value="token"),
+            patch("flask_rpr_oauth.decorators._get_userinfo_from_token", return_value=userinfo),
         ):
             response = client.post("/any-perm")
             assert response.status_code == 200
@@ -190,10 +190,10 @@ class TestAnyPermissionRequiredMethodSpecific:
         """Test GET without any of the required permissions returns 403."""
         userinfo = {"sub": "user1", "permissions": ["edit1"], "token_type": "user"}
 
-        with patch(
-            "flask_rpr_oauth.decorators._is_bearer_token_request", return_value=True
-        ), patch("flask_rpr_oauth.decorators._get_bearer_token", return_value="token"), patch(
-            "flask_rpr_oauth.decorators._get_userinfo_from_token", return_value=userinfo
+        with (
+            patch("flask_rpr_oauth.decorators._is_bearer_token_request", return_value=True),
+            patch("flask_rpr_oauth.decorators._get_bearer_token", return_value="token"),
+            patch("flask_rpr_oauth.decorators._get_userinfo_from_token", return_value=userinfo),
         ):
             response = client.get("/any-perm")
             assert response.status_code == 403
@@ -206,10 +206,10 @@ class TestGroupRequiredMethodSpecific:
         """Test GET request with correct group."""
         userinfo = {"sub": "user1", "groups": ["viewers"], "token_type": "user"}
 
-        with patch(
-            "flask_rpr_oauth.decorators._is_bearer_token_request", return_value=True
-        ), patch("flask_rpr_oauth.decorators._get_bearer_token", return_value="token"), patch(
-            "flask_rpr_oauth.decorators._get_userinfo_from_token", return_value=userinfo
+        with (
+            patch("flask_rpr_oauth.decorators._is_bearer_token_request", return_value=True),
+            patch("flask_rpr_oauth.decorators._get_bearer_token", return_value="token"),
+            patch("flask_rpr_oauth.decorators._get_userinfo_from_token", return_value=userinfo),
         ):
             response = client.get("/groups")
             assert response.status_code == 200
@@ -218,10 +218,10 @@ class TestGroupRequiredMethodSpecific:
         """Test POST request with correct group."""
         userinfo = {"sub": "user1", "groups": ["editors"], "token_type": "user"}
 
-        with patch(
-            "flask_rpr_oauth.decorators._is_bearer_token_request", return_value=True
-        ), patch("flask_rpr_oauth.decorators._get_bearer_token", return_value="token"), patch(
-            "flask_rpr_oauth.decorators._get_userinfo_from_token", return_value=userinfo
+        with (
+            patch("flask_rpr_oauth.decorators._is_bearer_token_request", return_value=True),
+            patch("flask_rpr_oauth.decorators._get_bearer_token", return_value="token"),
+            patch("flask_rpr_oauth.decorators._get_userinfo_from_token", return_value=userinfo),
         ):
             response = client.post("/groups")
             assert response.status_code == 200
@@ -230,10 +230,10 @@ class TestGroupRequiredMethodSpecific:
         """Test GET with wrong group returns 403."""
         userinfo = {"sub": "user1", "groups": ["editors"], "token_type": "user"}
 
-        with patch(
-            "flask_rpr_oauth.decorators._is_bearer_token_request", return_value=True
-        ), patch("flask_rpr_oauth.decorators._get_bearer_token", return_value="token"), patch(
-            "flask_rpr_oauth.decorators._get_userinfo_from_token", return_value=userinfo
+        with (
+            patch("flask_rpr_oauth.decorators._is_bearer_token_request", return_value=True),
+            patch("flask_rpr_oauth.decorators._get_bearer_token", return_value="token"),
+            patch("flask_rpr_oauth.decorators._get_userinfo_from_token", return_value=userinfo),
         ):
             response = client.get("/groups")
             assert response.status_code == 403
@@ -246,10 +246,10 @@ class TestAnyGroupRequiredMethodSpecific:
         """Test GET with one of the required groups."""
         userinfo = {"sub": "user1", "groups": ["guests"], "token_type": "user"}
 
-        with patch(
-            "flask_rpr_oauth.decorators._is_bearer_token_request", return_value=True
-        ), patch("flask_rpr_oauth.decorators._get_bearer_token", return_value="token"), patch(
-            "flask_rpr_oauth.decorators._get_userinfo_from_token", return_value=userinfo
+        with (
+            patch("flask_rpr_oauth.decorators._is_bearer_token_request", return_value=True),
+            patch("flask_rpr_oauth.decorators._get_bearer_token", return_value="token"),
+            patch("flask_rpr_oauth.decorators._get_userinfo_from_token", return_value=userinfo),
         ):
             response = client.get("/any-groups")
             assert response.status_code == 200
@@ -258,10 +258,10 @@ class TestAnyGroupRequiredMethodSpecific:
         """Test POST with one of the required groups."""
         userinfo = {"sub": "user1", "groups": ["admins"], "token_type": "user"}
 
-        with patch(
-            "flask_rpr_oauth.decorators._is_bearer_token_request", return_value=True
-        ), patch("flask_rpr_oauth.decorators._get_bearer_token", return_value="token"), patch(
-            "flask_rpr_oauth.decorators._get_userinfo_from_token", return_value=userinfo
+        with (
+            patch("flask_rpr_oauth.decorators._is_bearer_token_request", return_value=True),
+            patch("flask_rpr_oauth.decorators._get_bearer_token", return_value="token"),
+            patch("flask_rpr_oauth.decorators._get_userinfo_from_token", return_value=userinfo),
         ):
             response = client.post("/any-groups")
             assert response.status_code == 200
@@ -270,10 +270,10 @@ class TestAnyGroupRequiredMethodSpecific:
         """Test GET without any of the required groups returns 403."""
         userinfo = {"sub": "user1", "groups": ["editors"], "token_type": "user"}
 
-        with patch(
-            "flask_rpr_oauth.decorators._is_bearer_token_request", return_value=True
-        ), patch("flask_rpr_oauth.decorators._get_bearer_token", return_value="token"), patch(
-            "flask_rpr_oauth.decorators._get_userinfo_from_token", return_value=userinfo
+        with (
+            patch("flask_rpr_oauth.decorators._is_bearer_token_request", return_value=True),
+            patch("flask_rpr_oauth.decorators._get_bearer_token", return_value="token"),
+            patch("flask_rpr_oauth.decorators._get_userinfo_from_token", return_value=userinfo),
         ):
             response = client.get("/any-groups")
             assert response.status_code == 403

@@ -56,10 +56,10 @@ class TestWwwAuthenticateOn401:
 
     def test_bearer_invalid_token_has_www_authenticate(self):
         app = _make_app(OAUTH_RESOURCE_ID="https://gms.roleplayreality.nl")
-        with patch(
-            "flask_rpr_oauth.decorators._is_bearer_token_request", return_value=True
-        ), patch("flask_rpr_oauth.decorators._get_bearer_token", return_value="tok"), patch(
-            "flask_rpr_oauth.decorators._get_userinfo_from_token", return_value=None
+        with (
+            patch("flask_rpr_oauth.decorators._is_bearer_token_request", return_value=True),
+            patch("flask_rpr_oauth.decorators._get_bearer_token", return_value="tok"),
+            patch("flask_rpr_oauth.decorators._get_userinfo_from_token", return_value=None),
         ):
             resp = app.test_client().get("/protected")
         assert resp.status_code == 401

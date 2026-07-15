@@ -12,7 +12,6 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives import serialization
 from authlib.jose import JsonWebKey, jwt as jose_jwt
 
-
 ISSUER = "https://auth.test.nl"
 CLIENT_ID = "test-client"
 KID = "test-kid"
@@ -45,7 +44,9 @@ class _FakeRedis:
         return self.store.get(key)
 
 
-def _build_logout_token(private_pem, *, iss=ISSUER, aud=CLIENT_ID, sub="99", event=True, nonce=None, kid=KID):
+def _build_logout_token(
+    private_pem, *, iss=ISSUER, aud=CLIENT_ID, sub="99", event=True, nonce=None, kid=KID
+):
     now = int(time.time())
     payload = {"iss": iss, "sub": sub, "aud": aud, "iat": now, "exp": now + 120, "jti": "abc"}
     if event:
@@ -155,6 +156,7 @@ def test_disabled_returns_404(app, auth, rsa_material):
 
 
 # ------------------------------------------------- enforcement (before_request)
+
 
 def _add_protected_route(app):
     @app.route("/protected")

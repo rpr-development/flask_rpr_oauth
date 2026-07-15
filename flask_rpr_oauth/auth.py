@@ -46,6 +46,7 @@ except ImportError:
         func._csrf_exempt = True
         return func
 
+
 try:
     from flask_session import Session as FlaskSession
     from flask_session.base import ServerSideSessionInterface as _ServerSideSessionInterface
@@ -147,18 +148,17 @@ def _post_logout_form(action: str, params: dict):
     Uses POST instead of a GET redirect so that large JWTs (id_token_hint)
     remain in the request body and do not exceed the server's URL length limit.
     """
-    fields = ''.join(
-        f'<input type="hidden" name="{escape(k)}" value="{escape(v)}">'
-        for k, v in params.items()
+    fields = "".join(
+        f'<input type="hidden" name="{escape(k)}" value="{escape(v)}">' for k, v in params.items()
     )
     html = (
-        '<!DOCTYPE html><html><head><title>Uitloggen...</title></head><body>'
+        "<!DOCTYPE html><html><head><title>Uitloggen...</title></head><body>"
         f'<form id="f" method="post" action="{escape(action)}">{fields}</form>'
         '<script>document.getElementById("f").submit();</script>'
-        '</body></html>'
+        "</body></html>"
     )
     response = make_response(html)
-    response.headers['Content-Type'] = 'text/html; charset=utf-8'
+    response.headers["Content-Type"] = "text/html; charset=utf-8"
     return response
 
 
@@ -225,8 +225,6 @@ class RPRAuth:
         # Standaard AAN zodat onze applicaties direct in FiveM (NUI-iframe) beschikbaar zijn.
         # Zet expliciet op False als je deze trusted out-of-band bearer-flow niet wilt.
         app.config.setdefault("OAUTH_ENABLE_SESSION_BOOTSTRAP", True)
-        # Back-compat: oude vlag voor de (hernoemde) /auth/fivem-bootstrap alias.
-        app.config.setdefault("OAUTH_ENABLE_FIVEM_BOOTSTRAP", False)
         # OIDC Back-Channel Logout 1.0 (ontvanger): registreer /auth/backchannel-logout, waar
         # de auth server een ondertekend logout token naartoe POST bij centrale logout/ban/REVIEW.
         # Vereist een Redis (OAUTH_LOGOUT_REDIS_URL of de Flask-Session SESSION_REDIS) om álle
@@ -256,10 +254,20 @@ class RPRAuth:
         app.config.setdefault("OAUTH_ENABLE_SCIM", False)
         app.config.setdefault("OAUTH_SCIM_PERMISSION", "auth.scim.provision")
 
+        # DPoP (RFC 9449, sender-constrained tokens). Presenteert een client een token via het
+        # `Authorization: DPoP <token>`-scheme + een `DPoP:`-proofheader, dan valideert de
+        # decorator-laag de proof lokaal (tegen deze request-URL/-methode + ath) en eist dat de
+        # proof-thumbprint matcht met de `cnf.jkt` uit introspectie. Staat OAUTH_REQUIRE_DPOP aan,
+        # dan worden gewone Bearer-tokens geweigerd (401 met een DPoP-challenge) — bedoeld voor
+        # resource servers die uitsluitend sender-constrained API-/MCP-clients bedienen. Default
+        # UIT: Bearer blijft de standaard (o.a. sessie-cookie- en FiveM-consumers). De optionele
+        # jti-replaycache hergebruikt de back-channel-logout-Redis (OAUTH_LOGOUT_REDIS_URL).
+        app.config.setdefault("OAUTH_REQUIRE_DPOP", False)
+
         # Voor CHIPS/Partitioned cookie support moet de session cookie SameSite=None; Secure
         # zijn, anders wordt het niet meegestuurd bij cross-site OAuth redirects (bijv. FiveM NUI).
         # Zonder dit raakt Authlib de opgeslagen OAuth state kwijt → mismatching_state error.
-        if app.config.get("OAUTH_PARTITIONED_COOKIES", True): 
+        if app.config.get("OAUTH_PARTITIONED_COOKIES", True):
             app.config.setdefault("SESSION_COOKIE_SAMESITE", "None")
             app.config.setdefault("SESSION_COOKIE_SECURE", True)
 
@@ -347,8 +355,8 @@ class RPRAuth:
         """
         try:
             # Debug: log session keys and incoming state for mismatching_state diagnosis
-            incoming_state = request.args.get('state', '')
-            state_key = f'_state_auth_server_{incoming_state}'
+            incoming_state = request.args.get("state", "")
+            state_key = f"_state_auth_server_{incoming_state}"
             session_keys = list(session.keys()) if session else []
             has_state_key = state_key in session
             logger.info(
@@ -394,9 +402,7 @@ class RPRAuth:
             # Bewaar de next-URL zodat de gebruiker na een nieuwe login op de juiste plek belandt.
             next_url = session.get("next")
             session.clear()
-            logger.warning(
-                "[callback] OAuth state mismatch — sessie gecleard, opnieuw inloggen"
-            )
+            logger.warning("[callback] OAuth state mismatch — sessie gecleard, opnieuw inloggen")
             if next_url:
                 session["next"] = next_url
             return redirect(url_for("auth.login"))
@@ -495,7 +501,6 @@ class RPRAuth:
         response.raise_for_status()
         return response.json()
 
-
     @csrf_exempt
     def _handle_session_bootstrap(self):
         """
@@ -512,11 +517,9 @@ class RPRAuth:
         auto-logged-in as the correct user, without an interactive redirect.
 
         Enabled by default (so our apps work inside FiveM out of the box); set
-        OAUTH_ENABLE_SESSION_BOOTSTRAP=False to disable. The legacy
-        OAUTH_ENABLE_FIVEM_BOOTSTRAP flag is still honored for back-compat.
+        OAUTH_ENABLE_SESSION_BOOTSTRAP=False to disable.
 
-        Registered at GET/POST /auth/session-bootstrap, with /auth/fivem-bootstrap
-        kept as a deprecated alias.
+        Registered at GET/POST /auth/session-bootstrap.
 
         Access token (in order of preference):
             POST form field `access_token`, then an `Authorization: Bearer <token>`
@@ -530,10 +533,7 @@ class RPRAuth:
         credential — it was already minted for this app's audience.
         """
         # Guard: standaard aan (default True); expliciet op False zet 'm uit.
-        if not (
-            current_app.config.get("OAUTH_ENABLE_SESSION_BOOTSTRAP", True)
-            or current_app.config.get("OAUTH_ENABLE_FIVEM_BOOTSTRAP", False)
-        ):
+        if not current_app.config.get("OAUTH_ENABLE_SESSION_BOOTSTRAP", True):
             abort(404)
 
         # Haal het access token op: POST form (voorkeur) → Bearer header → query (afgeraden)
@@ -723,24 +723,6 @@ class RPRAuth:
 
         # Fallback als auth server geen end_session_endpoint heeft
         return redirect(url_for("index"))
-
-    def _handle_refresh(self):
-        """Refresh access token."""
-        if "oauth_token" not in session:
-            raise OAuthError("Geen token gevonden")
-
-        try:
-            token = session["oauth_token"]
-            new_token = self.auth_server.fetch_access_token(
-                refresh_token=token.get("refresh_token")
-            )
-            session["oauth_token"] = new_token
-            logger.info("Token succesvol gerefreshed")
-            return jsonify({"status": "success"})
-
-        except Exception as e:
-            logger.error(f"Token refresh error: {e}")
-            raise TokenExpiredError("Token refresh mislukt")
 
     # ------------------------------------------------------------------
     # OIDC Back-Channel Logout 1.0 (ontvanger)
@@ -990,7 +972,9 @@ class RPRAuth:
         if not token:
             return self._ssf_error("missing SET")
 
-        expected_aud = current_app.config.get("OAUTH_SSF_AUDIENCE") or current_app.config.get("OAUTH_CLIENT_ID")
+        expected_aud = current_app.config.get("OAUTH_SSF_AUDIENCE") or current_app.config.get(
+            "OAUTH_CLIENT_ID"
+        )
         claims = self._validate_set(token, expected_aud=expected_aud)
         if claims is None:
             return self._ssf_error("invalid SET")
@@ -1015,7 +999,9 @@ class RPRAuth:
             handled.append(event_uri)
             cb_key = _SSF_CALLBACK_KEYS.get(event_uri)
             if cb_key:
-                self._ssf_dispatch_callback(cb_key, sub, event_payload if isinstance(event_payload, dict) else {})
+                self._ssf_dispatch_callback(
+                    cb_key, sub, event_payload if isinstance(event_payload, dict) else {}
+                )
 
         if not handled:
             # Geldige SET, maar geen enkel bekend event → 400 zodat de verzender het merkt.
@@ -1206,18 +1192,10 @@ class RPRAuth:
 
         auth_bp.add_url_rule("/login", "login", self._handle_login)
         auth_bp.add_url_rule("/callback", "callback", self._handle_callback)
-        auth_bp.add_url_rule("/logout", "logout", self._handle_logout)
-        auth_bp.add_url_rule("/refresh", "refresh", self._handle_refresh)
+        auth_bp.add_url_rule("/logout", "logout", self._handle_logout, methods=["GET", "POST"])
         auth_bp.add_url_rule(
             "/session-bootstrap",
             "session_bootstrap",
-            self._handle_session_bootstrap,
-            methods=["GET", "POST"],
-        )
-        # Deprecated alias → zelfde handler, voor bestaande configs/docs.
-        auth_bp.add_url_rule(
-            "/fivem-bootstrap",
-            "fivem_bootstrap",
             self._handle_session_bootstrap,
             methods=["GET", "POST"],
         )
@@ -1393,7 +1371,10 @@ class RPRAuth:
         logger.info(log_message)
         session.clear()
         accept = request.headers.get("Accept", "")
-        is_xhr = request.headers.get("X-Requested-With") == "XMLHttpRequest" or "application/json" in accept
+        is_xhr = (
+            request.headers.get("X-Requested-With") == "XMLHttpRequest"
+            or "application/json" in accept
+        )
         if was_embedded and not is_xhr:
             return self._embedded_auth_signal("reauth")
         if is_xhr:
@@ -1411,33 +1392,33 @@ class RPRAuth:
         Het interval is instelbaar via OAUTH_TOKEN_REVALIDATE_INTERVAL (seconden).
         Stel in op 0 om bij elke request te valideren.
         """
-        if 'oauth_user' not in session:
+        if "oauth_user" not in session:
             return None
 
         # Sla auth-routes zelf over om redirect-loops te voorkomen
-        if request.endpoint and request.endpoint.startswith('auth.'):
+        if request.endpoint and request.endpoint.startswith("auth."):
             return None
 
         # Bearer token requests worden volledig afgehandeld door de decorator
         # (@login_required etc.) — sessie-revalidatie hier veroorzaakt een 401
         # als het in-sessie opgeslagen token nieuwer is dan het meegestuurde
         # Bearer token (bijv. na token-refresh door rpr_core).
-        if request.headers.get('Authorization', '').startswith('Bearer '):
+        if request.headers.get("Authorization", "").startswith("Bearer "):
             return None
 
-        interval = current_app.config.get('OAUTH_TOKEN_REVALIDATE_INTERVAL', 300)
+        interval = current_app.config.get("OAUTH_TOKEN_REVALIDATE_INTERVAL", 300)
 
         if interval > 0:
-            last_check = session.get('_token_validated_at', 0)
+            last_check = session.get("_token_validated_at", 0)
             if time.time() - last_check < interval:
                 return None
 
         if not self.validate_token():
             # §6 laag-2: _reauth_or_redirect honoreert embedded (FiveM NUI) sessies via een
             # postMessage-signaal i.p.v. een in-CEF redirect naar de auth-server.
-            return self._reauth_or_redirect('Sessie-token niet meer geldig, sessie gewist')
+            return self._reauth_or_redirect("Sessie-token niet meer geldig, sessie gewist")
 
-        session['_token_validated_at'] = time.time()
+        session["_token_validated_at"] = time.time()
         session.modified = True
         return None
 
@@ -1575,7 +1556,9 @@ class RPRAuth:
 
                 # Check ACR claim (OAuth standard)
                 acr = data.get("acr", "pwd")
-                logger.info(f"validate_2fa: userinfo acr={acr!r}, twofa_validated={data.get('twofa_validated')}")
+                logger.info(
+                    f"validate_2fa: userinfo acr={acr!r}, twofa_validated={data.get('twofa_validated')}"
+                )
                 if acr in ["mfa", "phr"]:
                     session["acr"] = acr
                     session["twofa_validated"] = True
@@ -1590,7 +1573,9 @@ class RPRAuth:
 
                 return twofa_validated
 
-            logger.info(f"validate_2fa: userinfo endpoint status {response.status_code}, return False")
+            logger.info(
+                f"validate_2fa: userinfo endpoint status {response.status_code}, return False"
+            )
             return False
 
         except Exception as e:
@@ -1656,8 +1641,10 @@ class RPRAuth:
 
         response = self.auth_server.authorize_redirect(redirect_uri, **kwargs)
         session.modified = True
-        state_keys = [k for k in session.keys() if k.startswith('_state_')]
-        logger.info(f"[require_2fa_reauth] force_fresh={force_fresh} state_keys_in_session={state_keys}")
+        state_keys = [k for k in session.keys() if k.startswith("_state_")]
+        logger.info(
+            f"[require_2fa_reauth] force_fresh={force_fresh} state_keys_in_session={state_keys}"
+        )
         return response
 
     def require_fresh_2fa(self, session_key: str = "_fresh_2fa_granted"):
@@ -1701,6 +1688,7 @@ class RPRAuth:
 
         # Eerste keer: stuur naar 2FA en dwing verse verificatie af
         from flask import request as flask_request
+
         session[pending_key] = True
         session["next"] = flask_request.url
         session.modified = True
