@@ -163,6 +163,11 @@ app.config['OAUTH_AUTO_VALIDATE'] = True
 # geweigerd (401). Tokens zonder aud (legacy) blijven overal geldig.
 app.config['OAUTH_RESOURCE_ID'] = 'https://gms.roleplayreality.nl'
 
+# Token-revocatie bij logout (RFC 7009, default: True). /auth/logout trekt de
+# sessietokens server-naar-server in, zodat ze óók sterven als de gebruiker de
+# end_session-bevestiging op de auth server nooit afmaakt. Best-effort.
+app.config['OAUTH_REVOKE_ON_LOGOUT'] = True
+
 # Signalen van de auth server (back-channel logout, security-events, SCIM):
 # zie de sectie "Signalen van de auth-server" verderop voor
 # OAUTH_ENABLE_BACKCHANNEL_LOGOUT, OAUTH_LOGOUT_REDIS_URL, OAUTH_ENABLE_SSF,
@@ -206,7 +211,7 @@ De package registreert automatisch de volgende routes:
 
 - `GET /auth/login` - Start OAuth flow
 - `GET /auth/callback` - OAuth callback endpoint
-- `GET /auth/logout` - Logout en clear session
+- `GET /auth/logout` - Logout: trekt de sessietokens in op de auth server (RFC 7009), wist de lokale sessie en start RP-Initiated Logout (`end_session`)
 - `GET /auth/refresh` - Refresh access token
 - `GET, POST /auth/session-bootstrap` - Bearer-based auto-login: zet een first-party sessie op vanuit een aangeleverd access token (via POST `access_token` (voorkeur) / GET-query / `Authorization: Bearer`), NIET een code. Alleen actief als `OAUTH_ENABLE_SESSION_BOOTSTRAP=True` (of de oude `OAUTH_ENABLE_FIVEM_BOOTSTRAP=True`).
 - `GET, POST /auth/fivem-bootstrap` - **Deprecated** alias voor `/auth/session-bootstrap` (zelfde handler), behouden voor bestaande configs.

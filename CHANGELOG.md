@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Token-revocatie bij logout (RFC 7009)**: `/auth/logout` trekt de sessietokens nu eerst
+  server-naar-server in op het `revocation_endpoint` (voorkeur: het refresh token — access
+  en refresh horen bij dezelfde token-registratie). Voorheen bleven de tokens (refresh: tot
+  30 dagen) geldig wanneer de gebruiker de end_session-bevestigingspagina op de auth server
+  niet afmaakte. Best-effort: een onbereikbaar endpoint breekt de logout nooit. Config:
+  `OAUTH_REVOKE_ON_LOGOUT` (default `True`). De end_session-request stuurt daarnaast nu ook
+  `client_id` mee (RP-Initiated Logout 1.0 §2, RECOMMENDED). De logout-flow heeft nu ook
+  eigen tests (`tests/test_logout.py` — was ongetest).
 - **SCIM 2.0-ontvanger (RFC 7643/7644)** op `/scim/v2/Users[/<id>]`: herbruikbaar
   provisioning-endpoint waarop de RPR-API scim-worker user-lifecycle pusht. Contract:
   `PUT /Users/<id>` = **upsert** (aanmaken als de gebruiker lokaal nog niet bestaat),

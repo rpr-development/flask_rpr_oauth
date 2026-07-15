@@ -213,6 +213,10 @@ class RPRAuth:
         # Stel defaults in
         app.config.setdefault("OAUTH_SCOPE", "openid profile email")
         app.config.setdefault("OAUTH_AUTO_VALIDATE", True)
+        # Trek bij /auth/logout de sessietokens server-naar-server in (RFC 7009),
+        # zodat ze ook sterven als de gebruiker de end_session-bevestiging op de
+        # auth server nooit afmaakt. Best-effort: falen breekt de logout niet.
+        app.config.setdefault("OAUTH_REVOKE_ON_LOGOUT", True)
         app.config.setdefault("OAUTH_PARTITIONED_COOKIES", True)
         app.config.setdefault("OAUTH_TIMEOUT", 10)
         app.config.setdefault("OAUTH_TOKEN_REVALIDATE_INTERVAL", 300)
@@ -630,11 +634,61 @@ class RPRAuth:
         resp.headers["Cache-Control"] = "no-store"
         return resp
 
+    def _revoke_tokens_at_server(self, token):
+        """Best-effort RFC 7009-revocatie van de sessietokens bij logout.
+
+        De browser-redirect naar end_session is niet gegarandeerd: de auth server
+        toont daar eerst een bevestigingspagina, en wie die sluit laat zijn refresh
+        token (30 dagen) gewoon doorleven. Door hier server-naar-server in te
+        trekken zijn de tokens hoe dan ook dood zodra de gebruiker op uitloggen
+        klikt. Fouten worden gelogd maar breken de logout nooit (best-effort);
+        de auth server trekt na de end_session-bevestiging ook zelf in (idempotent).
+        """
+        if not current_app.config.get("OAUTH_REVOKE_ON_LOGOUT", True):
+            return
+        try:
+            metadata = self.auth_server.load_server_metadata()
+            revocation_endpoint = metadata.get("revocation_endpoint")
+        except Exception as e:
+            logger.warning("Logout: kon server metadata niet laden voor token-revocatie: %s", e)
+            return
+        if not revocation_endpoint:
+            return
+
+        # Eén revocatie volstaat: refresh en access token horen bij dezelfde
+        # token-registratie op de auth server (revoke van de één raakt de ander).
+        # Prefereer het refresh token — dat leeft het langst.
+        value = token.get("refresh_token") or token.get("access_token")
+        if not value:
+            return
+        hint = "refresh_token" if token.get("refresh_token") else "access_token"
+        try:
+            resp = requests.post(
+                revocation_endpoint,
+                data={"token": value, "token_type_hint": hint},
+                auth=(
+                    current_app.config["OAUTH_CLIENT_ID"],
+                    current_app.config.get("OAUTH_CLIENT_SECRET") or "",
+                ),
+                timeout=current_app.config.get("OAUTH_TIMEOUT", 10),
+            )
+            if resp.status_code == 200:
+                logger.info("Logout: sessietokens ingetrokken op de auth server (%s)", hint)
+            else:
+                # RFC 7009 §2.2: 200 is het enige succes; al het andere loggen.
+                logger.warning("Logout: token-revocatie gaf HTTP %s", resp.status_code)
+        except Exception as e:  # netwerkfout → logout gaat gewoon door
+            logger.warning("Logout: token-revocatie mislukt: %s", e)
+
     def _handle_logout(self):
         """Logout: clear local session and initiate RP-Initiated Logout on the auth server."""
         # Bewaar het ID token vóór session.clear() voor de id_token_hint
         token = session.get("oauth_token", {})
         id_token = token.get("id_token")
+
+        # Trek de tokens server-naar-server in vóór de sessie (en daarmee de
+        # tokens) verdwijnt — de end_session-redirect hierna is best-effort.
+        self._revoke_tokens_at_server(token)
 
         session.clear()
         logger.info("User uitgelogd (lokale sessie gecleard)")
@@ -650,7 +704,9 @@ class RPRAuth:
 
         if end_session_endpoint:
             post_logout_redirect_uri = current_app.config.get("OAUTH_POST_LOGOUT_REDIRECT_URI")
-            params = {}
+            # client_id is RECOMMENDED (OIDC RP-Initiated Logout 1.0 §2) — geeft de
+            # auth server ook zonder (verlopen) id_token_hint een client-context.
+            params = {"client_id": current_app.config.get("OAUTH_CLIENT_ID")}
             if id_token:
                 params["id_token_hint"] = id_token
             if post_logout_redirect_uri:
