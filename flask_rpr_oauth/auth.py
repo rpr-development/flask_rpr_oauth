@@ -597,18 +597,45 @@ class RPRAuth:
         if "oauth_token" not in session:
             raise OAuthError("Geen token gevonden")
 
+        if not self._refresh_access_token():
+            raise TokenExpiredError("Token refresh mislukt")
+
+        return jsonify({"status": "success"})
+
+    def _refresh_access_token(self) -> bool:
+        """
+        Ververs het access token op de achtergrond via de opgeslagen refresh_token.
+
+        De refresh_token is een niet-roterend token met een eigen levensduur
+        (standaard 30 dagen op de auth server), losgekoppeld van de access-token-
+        lifetime (standaard 1 uur). Een geslaagde refresh laat de rest van de sessie
+        (oauth_user, permissions, acr, _admin_2fa_granted, …) ongemoeid — alleen
+        session["oauth_token"] wordt bijgewerkt.
+
+        Returns:
+            bool: True als het access token ververst is, False als refresh niet
+                  mogelijk was (geen refresh_token, of deze is zelf verlopen/ingetrokken).
+        """
+        token = session.get("oauth_token") or {}
+        refresh_token = token.get("refresh_token")
+        if not refresh_token:
+            return False
+
         try:
-            token = session["oauth_token"]
-            new_token = self.auth_server.fetch_access_token(
-                refresh_token=token.get("refresh_token")
-            )
+            new_token = self.auth_server.fetch_access_token(refresh_token=refresh_token)
+            # De refresh-grant op de auth server is niet-roterend en geeft geen
+            # nieuw refresh_token terug (RFC 6749 §5.1: optioneel veld) — bewaar
+            # daarom het bestaande refresh_token als het antwoord er geen bevat,
+            # anders verliest de sessie na deze ene refresh haar refresh-vermogen.
+            new_token.setdefault("refresh_token", refresh_token)
             session["oauth_token"] = new_token
-            logger.info("Token succesvol gerefreshed")
-            return jsonify({"status": "success"})
+            session.modified = True
+            logger.info("Token succesvol gerefreshed via refresh_token")
+            return True
 
         except Exception as e:
-            logger.error(f"Token refresh error: {e}")
-            raise TokenExpiredError("Token refresh mislukt")
+            logger.warning(f"Token refresh mislukt: {e}")
+            return False
 
     def _verify_webhook_secret(self):
         """Verifieer het webhook-secret (fail-closed, constant-time).
@@ -825,9 +852,19 @@ class RPRAuth:
                 return None
 
         if not self.validate_token():
+            # Access token verlopen (standaard na 1 uur) — probeer eerst stil te
+            # verversen via de refresh_token (30 dagen geldig) vóórdat de hele
+            # sessie wordt gewist. Zonder dit verliest de gebruiker bij elk verlopen
+            # access token zijn hele sessie, inclusief step-up vlaggen zoals
+            # _admin_2fa_granted, en moet hij/zij alles (incl. 2FA) opnieuw doen.
+            if self._refresh_access_token():
+                session['_token_validated_at'] = time.time()
+                session.modified = True
+                return None
+
             # §6 laag-2: onthoud of dit een FiveM-iframe-sessie was vóór het wissen.
             was_embedded = session.get('rpr_embedded', False)
-            logger.info('Sessie-token niet meer geldig, sessie gewist')
+            logger.info('Sessie-token niet meer geldig (ook na refresh-poging), sessie gewist')
             session.clear()
             accept = request.headers.get('Accept', '')
             is_xhr = request.headers.get('X-Requested-With') == 'XMLHttpRequest' or 'application/json' in accept
@@ -1100,8 +1137,13 @@ class RPRAuth:
                 logger.info(f"[require_fresh_2fa] 2FA gevalideerd, {session_key}=True")
                 return None
             else:
-                logger.warning(f"[require_fresh_2fa] Terug van reauth maar 2FA niet gevalideerd")
-                return None  # Aanroeper handelt de foutmelding af
+                # 2FA niet bevestigd na OAuth-callback (bijv. sessieproblemen) — opnieuw starten.
+                logger.warning(f"[require_fresh_2fa] Terug van reauth maar 2FA niet gevalideerd, flow opnieuw starten")
+                from flask import request as flask_request
+                session[pending_key] = True
+                session["next"] = flask_request.url
+                session.modified = True
+                return self.require_2fa_reauth(force_fresh=True)
 
         # Eerste keer: stuur naar 2FA en dwing verse verificatie af
         from flask import request as flask_request
