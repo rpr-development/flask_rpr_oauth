@@ -11,7 +11,9 @@ Een Flask extensie voor OAuth 2.0 / OpenID Connect authenticatie met [auth.rolep
 - 🤖 **M2M Token Support** - Client credentials flow voor server-to-server
 - 🎫 **Token Management** - Automatische token refresh en validatie
 - 🔑 **Two-Factor Authentication** - Volledige 2FA integratie met `@require_2fa` decorator
-- 🪝 **Webhook Support** - Real-time token revocation en gebruiker updates
+- 📣 **Back-channel logout** - Centrale logout/ban werkt direct door in je app (OIDC Back-Channel Logout 1.0)
+- 🔔 **Security-events (SSF)** - Ondertekende RISC/CAEP-events van de auth server (RFC 8417/8935)
+- 🔁 **SCIM-provisioning** - Automatische user-sync vanuit de auth server (RFC 7643/7644, opt-in)
 - ⚡ **Redis Sessions** - Optionele server-side session storage
 - 🛡️ **Decorators** - Session-based én stateless permission checks
 
@@ -64,6 +66,12 @@ pip install git+https://github.com/rpr-development/flask-rpr-oauth.git@v1.0.0
 
 ```bash
 pip install "git+https://github.com/rpr-development/flask-rpr-oauth.git[redis]"
+```
+
+### Met MCP-ondersteuning (ASGI, zie "MCP-servers" verderop)
+
+```bash
+pip install "git+https://github.com/rpr-development/flask-rpr-oauth.git[mcp]"
 ```
 
 ### In requirements.txt
@@ -155,8 +163,27 @@ app.config['OAUTH_SCOPE'] = 'openid profile email'
 # Auto validate tokens (default: True)
 app.config['OAUTH_AUTO_VALIDATE'] = True
 
-# Webhook secret voor validatie
-app.config['WEBHOOK_SECRET'] = 'your-webhook-secret'
+# Audience-check (RFC 8707, default: uit). De canonieke resource-URI van DEZE
+# applicatie, gelijk aan applications.resource_uri op de auth-server. Indien
+# gezet worden Bearer-tokens die aan een ANDERE resource gebonden zijn (aud)
+# geweigerd (401). Tokens zonder aud (legacy) blijven overal geldig.
+app.config['OAUTH_RESOURCE_ID'] = 'https://gms.roleplayreality.nl'
+
+# Strikte audience-handhaving (default: False). Vereist OAUTH_RESOURCE_ID. Zonder
+# deze vlag blijft een token zonder aud-claim overal geldig (legacy-gedrag); met
+# OAUTH_REQUIRE_AUD=True wordt zo'n token ook geweigerd. Aanbevolen voor resource
+# servers die alleen RFC 8707-bewuste clients (o.a. MCP) bedienen.
+app.config['OAUTH_REQUIRE_AUD'] = False
+
+# Token-revocatie bij logout (RFC 7009, default: True). /auth/logout trekt de
+# sessietokens server-naar-server in, zodat ze óók sterven als de gebruiker de
+# end_session-bevestiging op de auth server nooit afmaakt. Best-effort.
+app.config['OAUTH_REVOKE_ON_LOGOUT'] = True
+
+# Signalen van de auth server (back-channel logout, security-events, SCIM):
+# zie de sectie "Signalen van de auth-server" verderop voor
+# OAUTH_ENABLE_BACKCHANNEL_LOGOUT, OAUTH_LOGOUT_REDIS_URL, OAUTH_ENABLE_SSF,
+# OAUTH_SSF_AUDIENCE, OAUTH_ENABLE_SCIM en de OAUTH_ON_*-callbacks.
 
 # Partitioned cookies voor iframe/CHIPS ondersteuning (default: True)
 # Aanbevolen aan te laten voor applicaties die in iframe kunnen draaien
@@ -171,8 +198,8 @@ app.config['OAUTH_PARTITIONED_COOKIES'] = True
 #
 # Het access token wordt aangeleverd via (in volgorde van voorkeur):
 #   - POST form-veld `access_token` (voorkeur)
-#   - query-parameter `access_token` (GET)
 #   - `Authorization: Bearer <token>` header
+#   - query-parameter `access_token` (afgeraden — token lekt naar logs/Referer/history)
 # Het is een ACCESS TOKEN (bearer), GEEN code: er wordt niets ingewisseld bij
 # /oauth/token en er is geen client secret nodig. Het token wordt gevalideerd
 # door /oauth/userinfo aan te roepen; bij falen volgt een redirect naar login.
@@ -180,8 +207,61 @@ app.config['OAUTH_PARTITIONED_COOKIES'] = True
 # Standaard AAN zodat onze apps direct in FiveM beschikbaar zijn; zet expliciet
 # op False als je deze flow niet wilt aanbieden.
 app.config['OAUTH_ENABLE_SESSION_BOOTSTRAP'] = True
-# Back-compat: de oude vlag werkt nog en activeert dezelfde route + alias.
-app.config['OAUTH_ENABLE_FIVEM_BOOTSTRAP'] = False
+
+# Vereist een verse 2FA-login bij /auth/login zelf (stuurt acr_values=mfa mee
+# op de allereerste authorize-redirect, i.p.v. pas bij een @require_2fa-route).
+# Default: False.
+app.config['OAUTH_REQUIRE_2FA'] = False
+
+# DPoP (RFC 9449, sender-constrained tokens). Presenteert een client een token via
+# `Authorization: DPoP <token>` + een `DPoP:`-proofheader, dan valideert de decorator-laag
+# de proof lokaal (tegen deze request-URL/-methode + ath) en eist dat de proof-thumbprint
+# matcht met de `cnf.jkt` uit introspectie. Zet je dit AAN, dan worden gewone Bearer-tokens
+# geweigerd (401 met een `WWW-Authenticate: DPoP`-challenge) — bedoeld voor resource servers
+# die uitsluitend sender-constrained API-/MCP-clients bedienen. Default UIT: Bearer blijft de
+# standaard (o.a. sessie-cookie- en FiveM-consumers). De optionele jti-replaycache hergebruikt
+# OAUTH_LOGOUT_REDIS_URL (of SESSION_REDIS); zonder Redis is de cache fail-open.
+app.config['OAUTH_REQUIRE_DPOP'] = False
+
+# Timeout (seconden) voor alle uitgaande HTTP-calls naar de auth-server
+# (userinfo, introspectie, token-revocatie, JWKS). Default: 10.
+app.config['OAUTH_TIMEOUT'] = 10
+
+# Interval (seconden) waarop de before_request-hook het sessie-token opnieuw
+# valideert bij de auth-server (/oauth/userinfo). 0 = elke request valideren.
+# Default: 300.
+app.config['OAUTH_TOKEN_REVALIDATE_INTERVAL'] = 300
+
+# Waar de auth-server na RP-Initiated Logout naartoe mag redirecten
+# (post_logout_redirect_uri, OIDC RP-Initiated Logout 1.0 §2). Optioneel; zonder
+# deze waarde toont de auth-server zijn eigen post-logout pagina.
+app.config['OAUTH_POST_LOGOUT_REDIRECT_URI'] = 'https://jouwapp.nl/'
+
+# In-memory cache voor /oauth/userinfo- en /oauth/introspect-resultaten, om niet
+# bij elke request een HTTP-round-trip naar de auth-server te maken. TTL wordt
+# nooit langer dan de resterende levensduur van het token zelf. Defaults: 60s / 1000 tokens.
+app.config['OAUTH_USERINFO_CACHE_TTL'] = 60
+app.config['OAUTH_USERINFO_CACHE_MAXSIZE'] = 1000
+
+# Scopes die je in het RFC 9728 protected-resource-metadata-document
+# (/.well-known/oauth-protected-resource) wilt adverteren. Zonder deze waarde
+# wordt OAUTH_SCOPE gebruikt. `offline_access` wordt hier altijd uit gefilterd
+# (het is een refresh-scope, geen scope om voor deze resource te vragen) — met
+# een warning als je hem er zelf in zet.
+app.config['OAUTH_RESOURCE_SCOPES_SUPPORTED'] = ['openid', 'profile', 'email']
+
+# Naam/documentatie van deze resource server in het metadata-document (RFC 9728).
+# OAUTH_RESOURCE_NAME valt terug op de Flask-appnaam; OAUTH_RESOURCE_DOCUMENTATION
+# wordt alleen opgenomen als je hem zet.
+app.config['OAUTH_RESOURCE_NAME'] = 'RPR GMS'
+app.config['OAUTH_RESOURCE_DOCUMENTATION'] = 'https://docs.roleplayreality.nl/gms/api'
+
+# Scopes voor de `scope`-hint op een 401/403 WWW-Authenticate-challenge (RFC 6750
+# §3, zie "Scope-challenges voor MCP-clients" verderop). Lijst of spatie-
+# gescheiden string. Zonder deze waarde worden dezelfde scopes gebruikt als
+# OAUTH_RESOURCE_SCOPES_SUPPORTED (zonder offline_access); een lege lijst laat
+# het `scope`-attribuut helemaal weg.
+app.config['OAUTH_RESOURCE_REQUIRED_SCOPES'] = ['gms.read', 'gms.write']
 
 # Session configuration (voor Redis sessions)
 app.config['SESSION_TYPE'] = 'redis'
@@ -196,12 +276,11 @@ De package registreert automatisch de volgende routes:
 
 - `GET /auth/login` - Start OAuth flow
 - `GET /auth/callback` - OAuth callback endpoint
-- `GET /auth/logout` - Logout en clear session
-- `GET /auth/refresh` - Refresh access token
-- `GET, POST /auth/session-bootstrap` - Bearer-based auto-login: zet een first-party sessie op vanuit een aangeleverd access token (via POST `access_token` (voorkeur) / GET-query / `Authorization: Bearer`), NIET een code. Alleen actief als `OAUTH_ENABLE_SESSION_BOOTSTRAP=True` (of de oude `OAUTH_ENABLE_FIVEM_BOOTSTRAP=True`).
-- `GET, POST /auth/fivem-bootstrap` - **Deprecated** alias voor `/auth/session-bootstrap` (zelfde handler), behouden voor bestaande configs.
-- `POST /auth/webhook/token-revoked` - Webhook voor token revocation
-- `POST /auth/webhook/user-deleted` - Webhook voor user deletion
+- `GET, POST /auth/logout` - Logout: trekt de sessietokens in op de auth server (RFC 7009), wist de lokale sessie en start RP-Initiated Logout (`end_session`). Beide methodes gebruiken dezelfde handler; gebruik `POST` (vanuit een CSRF-beschermd formulier) als je een cross-site-triggerbare `GET`-logout wilt vermijden.
+- `GET, POST /auth/session-bootstrap` - Bearer-based auto-login: zet een first-party sessie op vanuit een aangeleverd access token (via POST `access_token` (voorkeur) / GET-query / `Authorization: Bearer`), NIET een code. Alleen actief als `OAUTH_ENABLE_SESSION_BOOTSTRAP=True`.
+- `POST /auth/backchannel-logout` - Ontvanger voor ondertekende logout tokens (OIDC Back-Channel Logout 1.0); default aan
+- `POST /auth/ssf` - Gedeelde ontvanger voor Security Event Tokens (SSF/RISC/CAEP, RFC 8417); default aan
+- `POST /scim/v2/Users` en `GET, PUT, DELETE /scim/v2/Users/<id>` - SCIM 2.0-provisioning; alleen actief met `OAUTH_ENABLE_SCIM=True`
 
 ## Current User
 
@@ -218,6 +297,7 @@ def profile():
         'email': current_user.email,
         'voornaam': current_user.voornaam,
         'achternaam': current_user.achternaam,
+        'full_name': current_user.full_name,
         'permissions': current_user._permissions,
         'groups': current_user._groups,
         'is_authenticated': current_user.is_authenticated,
@@ -233,6 +313,8 @@ current_user.oauth_id         # OAuth user ID
 current_user.email            # Email adres
 current_user.voornaam         # Voornaam
 current_user.achternaam       # Achternaam
+current_user.name             # Weergavenaam: voornaam + eerste letter achternaam ("Jan J.")
+current_user.full_name        # Volledige naam: voornaam + name_prefix (indien gezet) + achternaam
 current_user._permissions     # List van permission strings
 current_user._groups          # List van group strings
 current_user.is_authenticated # Boolean
@@ -348,6 +430,115 @@ De `@require_2fa` decorator:
 - Redirect naar auth server met `acr_values=mfa` als 2FA ontbreekt (step-up)
 - Auth server toont alleen het 2FA-scherm, geen wachtwoord opnieuw vragen
 - Redirect terug naar originele URL na 2FA voltooiing
+
+#### RFC 9470 §4 `max_age` — recente authenticatie afdwingen
+
+`@require_2fa` accepteert een optionele `max_age` (seconden), naast bare gebruik:
+
+```python
+@app.route('/admin/danger-zone')
+@require_2fa(max_age=300)          # login mag hooguit 5 minuten oud zijn
+def danger_zone():
+    return "Requires a recent login"
+```
+
+- Toetst `auth_time` (userinfo/introspectie, resp. de sessie) tegen `max_age`: ontbreekt
+  `auth_time` of is die ouder dan `max_age` seconden geleden, dan wordt (her)authenticatie
+  afgedwongen — óók als `acr` zelf al voldoet (bv. een oude 2FA-login).
+- **Bearer**: `401` met `WWW-Authenticate: Bearer error="insufficient_user_authentication",
+  max_age="<seconden>"` (plus `acr_values="mfa"` als die eis ook faalt). JSON-body:
+  `{"error": "reauthentication_required", ...}` als alleen `auth_time` het probleem is,
+  anders de bestaande `mfa_required`-body — routes zonder `max_age` zien dus geen verschil.
+- **Sessie**: herstart de OIDC-flow met `max_age=<seconden>` in de authorize-redirect (i.p.v.
+  alleen `acr_values=mfa`), zodat de auth server een bestaande SSO-sessie niet zomaar accepteert.
+- M2M-tokens blijven `403` (geen `auth_time`-concept).
+
+### @require_scope
+
+```python
+from flask_rpr_oauth import require_scope
+
+@app.route('/mcp/tools/deploy')
+@require_scope('gms.deploy', 'gms.write')
+def deploy_tool():
+    return "Deploy tool"
+```
+
+Eist dat het token álle opgegeven OAuth-`scope`s draagt — los van RPR-permissies
+(`@permission_required`). Nuttig voor bijv. een MCP-server die tools op scope gate.
+Ontbrekende scope(s) geven `403` met `WWW-Authenticate: Bearer
+error="insufficient_scope"` (zie de volgende sectie).
+
+## Scope-challenges voor MCP-clients
+
+MCP-clients lezen `scope` uit de `WWW-Authenticate`-header om te weten welke scopes ze
+moeten aanvragen, en verwachten op een tekortschietend token een `403` met
+`error="insufficient_scope"` (RFC 6750 §3, MCP-spec 2026-07-28).
+
+- **401** (`@login_required` en varianten, ongeldig/verlopen/verkeerde-audience-token):
+  `WWW-Authenticate: Bearer error="invalid_token", resource_metadata="...", scope="..."`.
+  Droeg de request helemaal geen token, dan ontbreekt `error` (RFC 6750 §3.1) en blijven
+  alleen `resource_metadata`/`scope` over.
+- **403** (`@permission_required`, `@any_permission_required`, `@group_required`,
+  `@any_group_required`, `@require_scope`): `WWW-Authenticate: Bearer
+  error="insufficient_scope", resource_metadata="...", scope="..."`. De JSON-body blijft
+  exact zoals voorheen; alleen de header komt erbij. Bij `@require_scope` bevat `scope`
+  precies de scopes die die route vereist; bij de andere decorators de resource-brede
+  `OAUTH_RESOURCE_REQUIRED_SCOPES` (of, zonder die config, dezelfde scopes als de
+  protected-resource-metadata).
+- Gebruikt de client het `DPoP`-scheme (of staat `OAUTH_REQUIRE_DPOP` aan), dan is de
+  challenge een `DPoP`-challenge in plaats van `Bearer` — ongewijzigd gedrag.
+
+## MCP-servers (ASGI) — RPRTokenVerifier
+
+Alles hierboven gaat over Flask. Voor een MCP-server (ASGI/Starlette, via de officiële
+[`mcp`-Python-SDK](https://pypi.org/project/mcp/)) is er geen Flask-app om `RPRAuth`
+aan te koppelen — dat gebruikt `flask_rpr_oauth.core.RPROAuthCore` (dezelfde
+token-verificatie als de Flask-kant: userinfo/introspectie, caching, RFC 8707
+audience-check, RFC 9449 DPoP) rechtstreeks, zonder Flask-afhankelijkheid.
+
+Installeer de optionele `mcp`-extra:
+
+```bash
+pip install "flask-rpr-oauth[mcp]"
+```
+
+```python
+from mcp.server.auth.settings import AuthSettings
+from mcp.server.mcpserver import MCPServer  # heette FastMCP vóór mcp 2.0
+from flask_rpr_oauth.mcp import RPRTokenVerifier
+
+verifier = RPRTokenVerifier(
+    auth_base_url="https://auth.roleplayreality.nl",
+    client_id="gms-mcp",
+    client_secret="...",
+    resource_id="https://gms.roleplayreality.nl/mcp",
+    # require_aud=True is hier de default (MCP-servers moeten audience-strikt zijn) —
+    # zet expliciet require_aud=False als tijdelijke opt-out.
+)
+
+server = MCPServer(
+    "RPR GMS",
+    token_verifier=verifier,
+    auth=AuthSettings(
+        issuer_url="https://auth.roleplayreality.nl",
+        resource_server_url="https://gms.roleplayreality.nl/mcp",
+        required_scopes=["gms.read"],
+    ),
+)
+```
+
+De SDK serveert zelf de protected-resource-metadata (RFC 9728) op het pad-suffix van
+`resource_server_url` — je hoeft `auth.py`'s Flask-route daarvoor niet apart te
+registreren voor een pure MCP-server.
+
+`RPRTokenVerifier.verify_token()` draait de synchrone core via `asyncio.to_thread`
+(blokkeert de event loop niet) en mapt het resultaat naar de SDK's `AccessToken`
+(`scopes`, `expires_at`, `resource`, `subject`, en de RPR-specifieke velden
+`permissions`/`groups`/`acr`/`auth_time`/`twofa_validated`/`token_type` onder `claims`).
+`auth_time` (RFC 9470 §4) staat een MCP-server toe zelf een `max_age`-eis te toetsen op
+het moment van de laatste gebruikersauthenticatie; `None` voor M2M-tokens en tokens van
+een auth server die deze claim (nog) niet uitgeeft.
 
 ## Two-Factor Authentication (2FA)
 
@@ -538,45 +729,147 @@ Session(app)
 auth = RPRAuth(app)
 ```
 
-## Webhooks
+## Signalen van de auth-server (back-channel logout & security-events)
 
-De package ondersteunt real-time updates via webhooks:
+De auth-server duwt belangrijke gebeurtenissen actief naar je app, buiten de browser om:
+uitloggen, een ban, een verwijderd account of een gewijzigd wachtwoord werkt zo binnen
+een minuut door in je applicatie. De package registreert de ontvangers automatisch; jij
+configureert alleen (optioneel) callbacks. De berichten zijn **ondertekende JWT's**
+(RS256, dezelfde JWKS als de id_tokens) — er is dus géén gedeeld secret nodig: de
+handtekening ís de authenticatie. De package valideert handtekening, `iss` (de
+discovery-issuer), `aud` en de events-claim; alles wat niet klopt wordt met 400 geweigerd.
 
-### Token Revocation
+Aanvullende hardening (gedeeld tussen back-channel logout en SSF, beide via dezelfde
+SET-validatie):
 
-Wanneer een token wordt ingetrokken op de OAuth server:
+- **`typ`-header**: een logout token moet `typ: logout+jwt` dragen, een SSF-SET
+  `typ: secevent+jwt` (RPR-API zet deze altijd). Ontbrekend of verkeerd → geweigerd.
+- **jti-replaycache**: elke SET moet een unieke `jti` dragen (RFC 8417 §2.2 REQUIRED);
+  een herhaald aanbod van exact dezelfde SET wordt geweigerd (Redis `SET NX EX`, TTL
+  op de resterende geldigheid van het token). Hergebruikt `OAUTH_LOGOUT_REDIS_URL`/
+  `SESSION_REDIS`; zonder Redis is dit **fail-open** (met een warning in de logs),
+  consistent met de DPoP-jti-cache.
+- **JWKS-herlaad bij sleutelrotatie**: draagt een SET een `kid` die niet in de
+  gecachete JWKS zit, dan probeert de package één keer een geforceerde herlaad
+  (rate-limited op maximaal 1x per 60 seconden per issuer) vóórdat het token als
+  ongeldig wordt afgewezen.
+- **Cache-invalidatie**: een back-channel-logout, en de SSF-events
+  `account-disabled`/`account-purged`/`session-revoked`, verwijderen ook meteen alle
+  userinfo/introspectie-cache-entries van die gebruiker — een nog niet verlopen
+  Bearer-cache-entry (`OAUTH_USERINFO_CACHE_TTL`) zou anders de oude permissies/groepen
+  nog even kunnen laten doorwerken. `credential-change` doet dit bewust niet (geen
+  sessie-/autorisatie-impact op zichzelf).
 
-```json
-POST /auth/webhook/token-revoked
-{
-  "sub": "12345"
-}
-```
+### Back-channel logout (OIDC Back-Channel Logout 1.0)
 
-De gebruiker wordt automatisch uitgelogd als deze ingelogd is.
-
-### User Deletion
-
-Wanneer een gebruiker wordt verwijderd:
-
-```json
-POST /auth/webhook/user-deleted
-{
-  "sub": "12345"
-}
-```
-
-De gebruiker wordt automatisch uitgelogd als deze ingelogd is.
-
-### Webhook Beveiliging
-
-Configureer een webhook secret op de OAuth server en in je app:
+Bij centraal uitloggen, een ban of REVIEW-status POST de auth-server een `logout_token`
+naar `POST /auth/backchannel-logout`. De package beëindigt daarna álle sessies van die
+gebruiker: er komt een logout-markering in Redis en elke sessie sterft bij zijn
+eerstvolgende request (een `before_request`-check).
 
 ```python
-app.config['WEBHOOK_SECRET'] = 'your-webhook-secret'
+# Default AAN. Redis is nodig om álle sessies te raken; zonder Redis kan alleen
+# de sessie van het huidige request beëindigd worden (wordt als error gelogd).
+app.config['OAUTH_ENABLE_BACKCHANNEL_LOGOUT'] = True
+app.config['OAUTH_LOGOUT_REDIS_URL'] = 'redis://localhost:6379/0'
+# Zonder OAUTH_LOGOUT_REDIS_URL wordt een geconfigureerde Flask-Session
+# SESSION_REDIS automatisch hergebruikt.
+
+# Levensduur van de logout-markering; moet elke sessie overleven die op het
+# moment van de logout bestond (default: 86400 = 24 uur).
+app.config['OAUTH_LOGOUT_MARKER_TTL'] = 86400
 ```
 
-De webhook wordt gevalideerd via de `X-Webhook-Secret` header.
+### Security-events (SSF — RFC 8417 SET's, RFC 8935 push)
+
+`POST /auth/ssf` is de gedeelde ontvanger voor Security Event Tokens van de auth-server.
+Registreer je app als **event-stream** in het admin-dashboard van de auth-server
+(Events & signalen → Event-streams) met deze URL en een audience; de event-stream-worker
+bezorgt elk event binnen een minuut (met retries bij storing).
+
+| Event | Wanneer | Automatische actie |
+| --- | --- | --- |
+| `account-disabled` (RISC) | Account geblokkeerd (ban/REVIEW) | Alle sessies beëindigd |
+| `account-purged` (RISC) | Account verwijderd (AVG) | Alle sessies beëindigd |
+| `session-revoked` (CAEP) | Sessie/tokens centraal ingetrokken | Alle sessies beëindigd |
+| `credential-change` (CAEP) | Wachtwoord of 2FA gewijzigd | Alle sessies beëindigd |
+
+Sessie-beëindiging gebeurt altijd (zelfde Redis-mechanisme als back-channel logout).
+Daarnaast kun je per event een callback registreren, bijvoorbeeld om lokale data op te
+ruimen bij een verwijderd account:
+
+```python
+def on_account_purged(sub, payload):
+    """sub = het user-id op de auth-server (string); payload = het event-object."""
+    LocalUser.query.filter_by(oauth_id=sub).delete()
+    db.session.commit()
+
+app.config['OAUTH_ON_ACCOUNT_PURGED'] = on_account_purged
+# Ook beschikbaar: OAUTH_ON_ACCOUNT_DISABLED, OAUTH_ON_SESSION_REVOKED,
+# OAUTH_ON_CREDENTIAL_CHANGE — allemaal (sub, payload). Een exception in een
+# callback wordt gelogd maar breekt de verwerking niet (fail-safe).
+
+app.config['OAUTH_ENABLE_SSF'] = True          # default AAN
+app.config['OAUTH_SSF_AUDIENCE'] = 'gms'       # verwachte `aud` in de SET;
+# default = OAUTH_CLIENT_ID. Moet gelijk zijn aan de audience van de
+# event-stream zoals op de auth-server geconfigureerd.
+```
+
+Onbekende event-types worden genegeerd; een geldige SET zonder enig bekend event geeft
+400, zodat de verzender het merkt. Succes = `202 Accepted` (RFC 8935).
+
+### SCIM-provisioning (RFC 7643/7644)
+
+Met SCIM duwt de auth-server het **user-bestand** actief naar je app: aanmaken, naam-/
+status-/groepswijzigingen en verwijdering, zodat lokale accounts nooit uit de pas lopen.
+De package levert de endpoints (`/scim/v2/Users[/<id>]`); jouw app implementeert alleen
+wat er lokaal moet gebeuren, via callbacks. **Default UIT** — zet 'm pas aan als de
+callbacks er zijn. De toegangscontrole loopt via hetzelfde DPoP-bewuste pad als de
+Flask-decorators: staat `OAUTH_REQUIRE_DPOP` aan, dan beschermt dat ook `/scim/v2/*`
+(een plain Bearer-token wordt dan geweigerd).
+
+Contract met de auth-server (de scim-worker):
+
+| Operatie | Betekenis | Verwacht gedrag |
+| --- | --- | --- |
+| `PUT /Users/<id>` | User aangemaakt/gewijzigd | **Upsert**: bestaat 'ie lokaal niet, maak 'm aan |
+| `POST /Users` | Create-fallback (`externalId` = user-id) | Zelfde als PUT |
+| `DELETE /Users/<id>` | User verwijderd | Idempotent: al weg = ook goed (204) |
+| `GET /Users/<id>` | AVG-export (privacy-worker) | Lokale data teruggeven, of 404 |
+
+```python
+app.config['OAUTH_ENABLE_SCIM'] = True
+# Aanbevolen: audience-binding aanzetten (RFC 8707), zodat alleen tokens die
+# voor déze app gemunt zijn worden geaccepteerd:
+app.config['OAUTH_RESOURCE_ID'] = 'https://gms.roleplayreality.nl'
+
+def scim_sync(user_id, resource):
+    """User aangemaakt of gewijzigd. resource = de SCIM User-resource (dict)."""
+    ...
+
+def scim_delete(user_id):
+    """User verwijderd op de auth-server. Idempotent implementeren."""
+    ...
+
+def scim_get(user_id):
+    """Optioneel: lokale data voor de AVG-export. None = gebruiker onbekend (404)."""
+    ...
+
+app.config['OAUTH_ON_SCIM_SYNC'] = scim_sync
+app.config['OAUTH_ON_SCIM_DELETE'] = scim_delete
+app.config['OAUTH_ON_SCIM_GET'] = scim_get      # optioneel
+```
+
+Beveiliging: elk SCIM-request vereist een Bearer **M2M-token** dat via introspectie
+valideert (inclusief de audience-check hierboven) én de provisioning-permissie draagt
+(`OAUTH_SCIM_PERMISSION`, default `auth.scim.provision` — de permissie van de
+scim-worker op de auth-server).
+
+Foutcontract: een exception in een callback geeft `500` — de scim-worker zet de job dan
+terug in de wachtrij en probeert het opnieuw (tot 5×). Een ontbrekende sync-/delete-callback
+geeft `501`; een `GET` zonder callback geeft `404` (= dit systeem heeft geen exportdata).
+Server-kant inschakelen: zet de SCIM-basis-URL op de applicatie in het
+admin-dashboard (Resource servers → Applicaties), bijv. `https://jouw-app/scim/v2`.
 
 ## Error Handling
 
@@ -618,13 +911,13 @@ De package gebruikt pure Flask sessions voor authenticatie, zonder Flask-Login d
 5. Sla tokens + user data op in session
 6. Automatische token refresh bij bijna-expiry
 
-### Webhook Flow
+### Signalen-flow (BCL/SSF)
 
-1. OAuth server stuurt webhook bij token revocation of user deletion
-2. Webhook signature wordt gevalideerd
-3. User wordt gezocht in actieve sessions
-4. Session wordt cleared
-5. User is uitgelogd
+1. Auth server POST een ondertekend token naar `/auth/backchannel-logout` of `/auth/ssf`
+2. Package valideert handtekening (JWKS), `iss`, `aud` en de events-claim
+3. Logout-markering voor die gebruiker gaat in Redis (+ optionele app-callback)
+4. Elke sessie van de gebruiker sterft bij zijn eerstvolgende request
+5. Antwoord aan de auth server: `200`/`202`; bij een fout `400` zodat de worker het merkt
 
 ## Quick Reference
 
@@ -638,6 +931,8 @@ De package gebruikt pure Flask sessions voor authenticatie, zonder Flask-Login d
 | `@group_required('group')` | Vereist specifieke groep | `@group_required('staff')` |
 | `@any_group_required('g1', 'g2')` | Vereist één van de groepen | `@any_group_required('vip', 'premium')` |
 | `@require_2fa` | Vereist 2FA validatie | `@require_2fa` |
+| `@require_2fa(max_age=N)` | Vereist ook een recente login (RFC 9470) | `@require_2fa(max_age=300)` |
+| `@require_scope('s1', 's2')` | Vereist OAuth-scope(s), los van RPR-permissies | `@require_scope('gms.deploy')` |
 
 ### Current User Properties
 
@@ -646,6 +941,8 @@ current_user.id                # OAuth user ID
 current_user.email             # Email adres
 current_user.voornaam          # Voornaam
 current_user.achternaam        # Achternaam
+current_user.name              # Weergavenaam ("Jan J.")
+current_user.full_name         # Volledige naam
 current_user.is_authenticated  # Boolean
 current_user.twofa_validated   # Boolean - 2FA status
 current_user._permissions      # List[str]
@@ -672,6 +969,7 @@ rpr_auth.validate_token()                    # Valideer access token
 rpr_auth.validate_2fa()                      # Valideer 2FA status (acr=mfa/phr)
 rpr_auth.require_2fa_reauth()                # OIDC step-up: acr_values=mfa (bestaande 2FA/passkey voldoet)
 rpr_auth.require_2fa_reauth(force_fresh=True) # Forceer verse 2FA (prompt=login, voor gevoelige acties)
+rpr_auth.require_2fa_reauth(max_age=300)     # RFC 9470: forceer herlogin als auth_time > 300s oud is
 rpr_auth.require_fresh_2fa('_key')           # Verse 2FA voor specifieke actie (per session_key)
 ```
 
@@ -749,7 +1047,7 @@ Maak release notes aan op GitHub met changelog:
 - Gebruik altijd HTTPS in productie
 - Sla `OAUTH_CLIENT_SECRET` veilig op (environment variables)
 - Gebruik sterke `SECRET_KEY` voor Flask sessions
-- Configureer `OAUTH_WEBHOOK_SECRET` voor webhook validatie
+- Configureer Redis (`OAUTH_LOGOUT_REDIS_URL` of `SESSION_REDIS`) zodat back-channel logout en security-events álle sessies kunnen beëindigen
 - Gebruik Redis sessions in productie (server-side storage)
 - Valideer altijd permissions server-side (niet alleen in templates)
 

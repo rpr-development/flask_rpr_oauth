@@ -21,6 +21,7 @@ from .decorators import (
     group_required,
     any_group_required,
     require_2fa,
+    require_scope,
     m2m_only,
     user_only,
 )
@@ -43,6 +44,7 @@ __all__ = [
     "group_required",
     "any_group_required",
     "require_2fa",
+    "require_scope",
     "m2m_only",
     "user_only",
     # Stateless helpers

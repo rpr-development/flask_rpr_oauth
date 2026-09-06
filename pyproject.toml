@@ -37,6 +37,11 @@ redis = [
     "redis>=4.0.0",
     "Flask-Session>=0.8.0",
 ]
+mcp = [
+    # 1.10.0 is the first release with both the TokenVerifier protocol and the
+    # RFC 8707 `resource` field on AccessToken, which RPRTokenVerifier relies on.
+    "mcp>=1.10.0",
+]
 dev = [
     "pytest>=7.0.0",
     "pytest-cov>=7.1.0",
