@@ -10,6 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** legacy `/auth/webhook/*` receivers removed (zie Removed).
 
 ### Added
+- **Framework-agnostische core (`core.py`) + MCP `TokenVerifier`-adapter (`mcp.py`)**:
+  de userinfo/introspectie-cache, het RFC 8707 audience-onderzoek en de RFC 9449
+  DPoP-validatie zijn verplaatst naar een nieuwe, Flask-vrije klasse `RPROAuthCore`
+  (`introspect`, `userinfo`, `verify_bearer`, `get_token_scopes`, `verify_dpop`).
+  `helpers.py` en de DPoP-tak van `decorators.py` zijn nu dunne Flask-schillen
+  eromheen — bestaand gedrag/signaturen ongewijzigd. Nieuw: `RPRTokenVerifier`
+  (`flask_rpr_oauth.mcp`) implementeert het `TokenVerifier`-protocol van de officiële
+  MCP-Python-SDK, zodat een ASGI/Starlette MCP-server rechtstreeks tegen de RPR-API
+  auth server kan verifiëren zonder Flask. Optionele extra: `pip install
+  flask-rpr-oauth[mcp]` (`mcp>=1.10.0`); zonder dat pakket geeft `RPRTokenVerifier()`
+  een duidelijke `ImportError`. MCP-servers zijn standaard audience-strikt
+  (`require_aud=True`), opt-out via `require_aud=False`.
 - **RFC 6750 §3 scope-challenges (MCP-spec 2026-07-28)**: `WWW-Authenticate`-challenges
   dragen nu een `scope`-hint. `401`'s (`@login_required` en varianten) melden `error=
   "invalid_token"` alleen als de request daadwerkelijk een token droeg (§3.1: zonder token

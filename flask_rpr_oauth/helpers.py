@@ -2,7 +2,13 @@
 flask_rpr_oauth.helpers
 ~~~~~~~~~~~~~~~~~~~~~~
 
-Helper functions for fetching and caching userinfo via the OAuth server.
+Thin Flask shell around ``core.RPROAuthCore``: builds a lightweight core instance
+from ``current_app.config`` on every call (cheap — the constructor does no I/O) and
+delegates the actual userinfo/introspection/audience/DPoP logic to it. The
+underlying cache lives in ``core.py`` and is shared across calls/instances (module-
+level, not tied to any one instance), so behaviour/performance are unchanged from
+before this was split out — see ``core.py`` for the framework-agnostic logic.
+
 Suitable for both API (Bearer token) and session-based authentication.
 
 Token validation order:
@@ -12,115 +18,54 @@ Token validation order:
 """
 
 import logging
-import threading
-import time
-from typing import Dict, Tuple, Optional
+
 from flask import current_app
-import requests
+
+from .core import RPROAuthCore
+from .core import clear_cache as _clear_core_cache
 
 logger = logging.getLogger(__name__)
 
-# In-memory cache voor userinfo (voorkomt herhaalde API calls).
-# Value = (userinfo dict, expiry timestamp). Een TTL is essentieel: zonder
-# verloop zou een ingetrokken of verlopen token tot proces-herstart geldig
-# blijven in API-mode. De cache is bovendien begrensd om geheugengroei
-# (één entry per uniek token) te voorkomen.
-_userinfo_cache: Dict[str, Tuple[dict, float]] = {}
-# Beschermt _userinfo_cache: onder Gunicorn threads/gevent muteren meerdere requests
-# de dict tegelijk (iteratie + pop in _cache_set) → anders RuntimeError/corruptie.
-_cache_lock = threading.Lock()
 
-# Defaults; overschrijfbaar via Flask config.
-_DEFAULT_CACHE_TTL = 60  # seconden — begrenst het revocatie-venster
-_DEFAULT_CACHE_MAXSIZE = 1000  # max aantal tokens in de cache
-
-
-def _cache_ttl() -> int:
-    """TTL (seconden) voor de userinfo-cache; 0 schakelt caching uit."""
+def _config_int(key: str, default: int) -> int:
     try:
-        return int(current_app.config.get("OAUTH_USERINFO_CACHE_TTL", _DEFAULT_CACHE_TTL))
+        return int(current_app.config.get(key, default))
     except (RuntimeError, TypeError, ValueError):
-        return _DEFAULT_CACHE_TTL
+        return default
 
 
-def _cache_maxsize() -> int:
-    try:
-        return int(current_app.config.get("OAUTH_USERINFO_CACHE_MAXSIZE", _DEFAULT_CACHE_MAXSIZE))
-    except (RuntimeError, TypeError, ValueError):
-        return _DEFAULT_CACHE_MAXSIZE
-
-
-def _cache_get(token: str) -> Optional[dict]:
-    """Return cached userinfo if present and not expired, else None."""
-    with _cache_lock:
-        entry = _userinfo_cache.get(token)
-        if entry is None:
+def _dpop_redis_for_current_app():
+    """Optionele Redis voor de DPoP-jti-replaycache. Hergebruikt de al-geconfigureerde
+    back-channel-logout-client van de RPRAuth-extensie; None (fail-open) als die er niet is."""
+    rpr_auth = current_app.extensions.get("rpr_auth")
+    if rpr_auth is not None and hasattr(rpr_auth, "_logout_redis"):
+        try:
+            return rpr_auth._logout_redis()
+        except Exception:
             return None
-        userinfo, expires_at = entry
-        if time.time() >= expires_at:
-            _userinfo_cache.pop(token, None)
-            return None
-        return userinfo
+    return None
 
 
-def _cache_set(token: str, userinfo: dict) -> None:
-    """Cache userinfo with a TTL, never longer than the token's own lifetime."""
-    ttl = _cache_ttl()
-    if ttl <= 0:
-        return
+def _get_core() -> RPROAuthCore:
+    """Bouw een ``RPROAuthCore`` vanuit de actuele Flask-config.
 
-    now = time.time()
-    # Cap de TTL op de resterende levensduur van het token (introspect geeft 'exp')
-    exp = userinfo.get("exp")
-    if isinstance(exp, (int, float)):
-        ttl = min(ttl, max(0, int(exp - now)))
-        if ttl <= 0:
-            return
-
-    with _cache_lock:
-        # Begrens de cachegrootte: ruim verlopen entries op, daarna oudste (FIFO)
-        if len(_userinfo_cache) >= _cache_maxsize():
-            for key in [k for k, (_, e) in _userinfo_cache.items() if e <= now]:
-                _userinfo_cache.pop(key, None)
-            while len(_userinfo_cache) >= _cache_maxsize() and _userinfo_cache:
-                _userinfo_cache.pop(next(iter(_userinfo_cache)), None)
-
-        _userinfo_cache[token] = (userinfo, now + ttl)
-
-
-def _audience_allowed(data: dict) -> bool:
-    """RFC 8707: weiger tokens die aan een ANDERE resource server gebonden zijn.
-
-    Vereist ``OAUTH_RESOURCE_ID`` in de Flask-config: de canonieke resource-URI
-    van déze applicatie, gelijk aan ``applications.resource_uri`` op de auth-server
-    (bijv. ``https://gms.roleplayreality.nl``). Regels:
-
-    - geen ``OAUTH_RESOURCE_ID`` geconfigureerd → geen handhaving (opt-in);
-    - token zonder ``aud`` (legacy/ongebonden) → overal geldig, tenzij ``OAUTH_REQUIRE_AUD``
-      aanstaat (default ``False``) — dan is een ontbrekende ``aud`` ook een weigering;
-    - token mét ``aud`` → moet exact matchen, anders wordt het token geweigerd
-      alsof het ongeldig is (401 door de aanroepende decorator).
+    Bewust NIET gecachet op ``current_app``/``g``: config kan tussen aanroepen wijzigen
+    (o.a. in tests, die na app-initialisatie nog ``app.config[...]`` zetten) en de
+    constructor zelf doet geen I/O — een nieuwe instance bouwen is goedkoop. De
+    onderliggende cache (``core._cache``) is wél gedeeld/persistent over aanroepen heen.
     """
-    resource_id = current_app.config.get("OAUTH_RESOURCE_ID")
-    if not resource_id:
-        return True
-
-    aud = data.get("aud")
-    if not aud:
-        if current_app.config.get("OAUTH_REQUIRE_AUD", False):
-            logger.warning("Token geweigerd: geen aud-claim, maar OAUTH_REQUIRE_AUD vereist er een")
-            return False
-        return True
-
-    if aud == resource_id:
-        return True
-
-    # Geen waarden loggen: de aud is afgeleid van het aangeboden token en de resource-id
-    # is een config-waarde (CodeQL: config = gevoelig). De sleutelnaam volstaat voor ops.
-    logger.warning(
-        "Token geweigerd: token-aud hoort niet bij deze resource server (OAUTH_RESOURCE_ID)"
+    return RPROAuthCore(
+        auth_base_url=current_app.config.get("OAUTH_BASE_URL"),
+        client_id=current_app.config.get("OAUTH_CLIENT_ID"),
+        client_secret=current_app.config.get("OAUTH_CLIENT_SECRET"),
+        resource_id=current_app.config.get("OAUTH_RESOURCE_ID"),
+        require_aud=current_app.config.get("OAUTH_REQUIRE_AUD", False),
+        require_dpop=current_app.config.get("OAUTH_REQUIRE_DPOP", False),
+        cache_ttl=_config_int("OAUTH_USERINFO_CACHE_TTL", 60),
+        cache_maxsize=_config_int("OAUTH_USERINFO_CACHE_MAXSIZE", 1000),
+        redis=_dpop_redis_for_current_app(),
+        timeout=current_app.config.get("OAUTH_TIMEOUT", 10),
     )
-    return False
 
 
 def resource_scopes_supported() -> list:
@@ -134,6 +79,9 @@ def resource_scopes_supported() -> list:
     ``offline_access`` wordt altijd gefilterd: het is een refresh-scope, niet iets wat een
     client zou moeten aanvragen om deze resource te mogen gebruiken. Met een warning als de
     eigenaar hem zelf in ``OAUTH_RESOURCE_SCOPES_SUPPORTED`` heeft gezet.
+
+    Blijft hier (i.p.v. in ``core.py``): dit is puur resource-metadata-config, geen
+    token-verificatie.
     """
     scopes = current_app.config.get("OAUTH_RESOURCE_SCOPES_SUPPORTED")
     if scopes is None:
@@ -170,133 +118,45 @@ def get_userinfo_from_token(token):
     Returns:
         dict: Userinfo/introspection response, or None on error
     """
-    cached = _cache_get(token)
-    if cached is not None:
-        logger.debug("Userinfo cache hit")
-        return cached
-
-    oauth_base_url = current_app.config.get("OAUTH_BASE_URL")
-    if not oauth_base_url:
-        logger.error("OAUTH_BASE_URL not configured")
-        return None
-
-    # Stap 1: probeer userinfo (werkt voor user tokens)
-    try:
-        response = requests.get(
-            f"{oauth_base_url}/oauth/userinfo",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=10,
-        )
-
-        if response.status_code == 200:
-            userinfo = response.json()
-            if not _audience_allowed(userinfo):
-                return None
-            _cache_set(token, userinfo)
-            logger.debug(
-                f'Userinfo fetched - token_type: {userinfo.get("token_type")}, '
-                f'sub: {userinfo.get("sub")}, permissions: {len(userinfo.get("permissions", []))}'
-            )
-            return userinfo
-
-        if response.status_code != 403:
-            logger.warning(f"Userinfo request failed: {response.status_code}")
-            return None
-
-        # 403 = token is geldig maar heeft geen userinfo toegang (M2M token)
-        logger.debug("Userinfo returned 403, falling back to token introspection")
-
-    except Exception as e:
-        logger.error(f"Userinfo request error: {e}")
-        return None
-
-    # Stap 2: introspection fallback voor M2M tokens
-    return _introspect_token(token, oauth_base_url)
+    return _get_core().verify_bearer(token)
 
 
-def _introspect_token(token: str, oauth_base_url: str) -> dict | None:
+def _introspect_token(token: str, oauth_base_url: str = None) -> dict | None:
     """
-    Validate a token via the /oauth/introspect endpoint.
+    Validate a token via the /oauth/introspect endpoint (RFC 7662).
 
-    Uses OAUTH_CLIENT_ID and OAUTH_CLIENT_SECRET as HTTP Basic Auth,
-    per RFC 7662 (Token Introspection).
+    ``oauth_base_url`` is accepted for backward compatibility with existing call
+    sites/tests but ignored: the core reads ``OAUTH_BASE_URL`` from the current app
+    config itself.
 
     Returns:
         dict with token claims including 'token_type': 'm2m', or None on error
     """
-    client_id = current_app.config.get("OAUTH_CLIENT_ID")
-    client_secret = current_app.config.get("OAUTH_CLIENT_SECRET")
+    return _get_core().introspect(token)
 
-    if not client_id or not client_secret:
-        logger.error("Token introspection vereist OAUTH_CLIENT_ID en OAUTH_CLIENT_SECRET")
-        return None
 
-    try:
-        response = requests.post(
-            f"{oauth_base_url}/oauth/introspect",
-            data={"token": token},
-            auth=(client_id, client_secret),
-            timeout=10,
-        )
-
-        if response.status_code != 200:
-            logger.warning(f"Token introspection failed: {response.status_code}")
-            return None
-
-        data = response.json()
-
-        if not data.get("active"):
-            logger.debug("Token introspection: token is not active")
-            return None
-
-        if not _audience_allowed(data):
-            return None
-
-        _cache_set(token, data)
-        logger.debug(
-            f'Token introspected - token_type: {data.get("token_type")}, '
-            f'sub: {data.get("sub")}, permissions: {len(data.get("permissions", []))}'
-        )
-        return data
-
-    except Exception as e:
-        logger.error(f"Token introspection error: {e}")
-        return None
+def _audience_allowed(data: dict) -> bool:
+    """RFC 8707 audience-check for the current app; see ``core.RPROAuthCore._audience_allowed``."""
+    return _get_core()._audience_allowed(data)
 
 
 def get_token_scopes(token: str) -> set:
     """Geef de OAuth-``scope``s van ``token`` terug, voor gebruik door ``require_scope``.
 
-    ``/oauth/userinfo`` geeft voor user-tokens geen ``scope`` terug (alleen introspectie
-    doet dat, RFC 7662) — een cache-hit zonder ``scope``-veld (bijv. eerder gezet door
-    ``get_userinfo_from_token()``) triggert daarom alsnog een introspectie-call, die de
-    cache-entry vervangt met de rijkere introspectie-respons. Hergebruikt dezelfde
-    cache en ``_audience_allowed``-controle als het bestaande introspectie-pad.
-
-    Returns:
-        set: de scopes van het token, of een lege set als het token ongeldig is of geen
-             scopes draagt.
+    Zie ``core.RPROAuthCore.get_token_scopes`` voor de volledige uitleg (introspectie-
+    fallback omdat userinfo geen ``scope`` teruggeeft voor user-tokens).
     """
-    cached = _cache_get(token)
-    if cached is not None and "scope" in cached:
-        data = cached
-    else:
-        oauth_base_url = current_app.config.get("OAUTH_BASE_URL")
-        if not oauth_base_url:
-            logger.error("OAUTH_BASE_URL not configured")
-            return set()
-        data = _introspect_token(token, oauth_base_url)
+    return _get_core().get_token_scopes(token)
 
-    if not data:
-        return set()
-    return set((data.get("scope") or "").split())
+
+def verify_dpop_request(token: str, proof: str, method: str, url: str):
+    """Thin Flask shell for ``core.RPROAuthCore.verify_dpop``, used by ``decorators.py``."""
+    return _get_core().verify_dpop(token, proof, method, url)
 
 
 def clear_userinfo_cache():
     """Clear the userinfo cache (for testing/development)."""
-    # .clear() i.p.v. herbinden: andere threads houden dezelfde dict-referentie vast.
-    with _cache_lock:
-        _userinfo_cache.clear()
+    _clear_core_cache()
     logger.info("Userinfo cache cleared")
 
 

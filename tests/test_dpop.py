@@ -71,7 +71,7 @@ def _introspection(key):
 def test_valid_dpop_request_allowed(key):
     app = _make_app()
     token = "the-access-token"
-    with patch("flask_rpr_oauth.helpers._introspect_token", return_value=_introspection(key)):
+    with patch("flask_rpr_oauth.core.RPROAuthCore.introspect", return_value=_introspection(key)):
         resp = app.test_client().get(
             "/sensitive",
             headers={"Authorization": f"DPoP {token}", "DPoP": _proof(key, token)},
@@ -82,7 +82,7 @@ def test_valid_dpop_request_allowed(key):
 def test_dpop_missing_proof_rejected(key):
     app = _make_app()
     token = "the-access-token"
-    with patch("flask_rpr_oauth.helpers._introspect_token", return_value=_introspection(key)):
+    with patch("flask_rpr_oauth.core.RPROAuthCore.introspect", return_value=_introspection(key)):
         resp = app.test_client().get("/sensitive", headers={"Authorization": f"DPoP {token}"})
     assert resp.status_code == 401
     assert resp.headers.get("WWW-Authenticate", "").startswith("DPoP")
@@ -93,7 +93,7 @@ def test_dpop_jkt_mismatch_rejected(key):
     token = "the-access-token"
     # Introspectie bindt aan een ANDERE sleutel dan de proof → mismatch.
     other = ECKey.generate_key("P-256")
-    with patch("flask_rpr_oauth.helpers._introspect_token", return_value=_introspection(other)):
+    with patch("flask_rpr_oauth.core.RPROAuthCore.introspect", return_value=_introspection(other)):
         resp = app.test_client().get(
             "/sensitive",
             headers={"Authorization": f"DPoP {token}", "DPoP": _proof(key, token)},
@@ -107,7 +107,7 @@ def test_dpop_scheme_with_unbound_token_rejected(key):
     app = _make_app()
     token = "the-access-token"
     unbound = {"active": True, "token_type": "user", "sub": "42", "permissions": [], "groups": []}
-    with patch("flask_rpr_oauth.helpers._introspect_token", return_value=unbound):
+    with patch("flask_rpr_oauth.core.RPROAuthCore.introspect", return_value=unbound):
         resp = app.test_client().get(
             "/sensitive",
             headers={"Authorization": f"DPoP {token}", "DPoP": _proof(key, token)},
@@ -118,7 +118,7 @@ def test_dpop_scheme_with_unbound_token_rejected(key):
 def test_dpop_wrong_ath_rejected(key):
     app = _make_app()
     token = "the-access-token"
-    with patch("flask_rpr_oauth.helpers._introspect_token", return_value=_introspection(key)):
+    with patch("flask_rpr_oauth.core.RPROAuthCore.introspect", return_value=_introspection(key)):
         resp = app.test_client().get(
             "/sensitive",
             headers={"Authorization": f"DPoP {token}", "DPoP": _proof(key, token, ath="wrong")},

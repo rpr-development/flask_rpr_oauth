@@ -83,60 +83,16 @@ def _request_htu():
     return base.rstrip("/") + request.path
 
 
-def _dpop_replay_redis():
-    """Optionele Redis voor de DPoP jti-replaycache. Hergebruikt de al-geconfigureerde
-    back-channel-logout-client van de RPRAuth-extensie; None (fail-open) als die er niet is."""
-    rpr_auth = current_app.extensions.get("rpr_auth")
-    if rpr_auth is not None and hasattr(rpr_auth, "_logout_redis"):
-        try:
-            return rpr_auth._logout_redis()
-        except Exception:
-            return None
-    return None
-
-
 def _authenticate_dpop_token(token):
-    """Valideer een DPoP-request (RFC 9449 §7.1): proof lokaal valideren + de ``cnf.jkt`` uit
-    introspectie vergelijken. Returnt de introspectie-dict (permissions/groups/acr/sub) of None.
+    """Valideer een DPoP-request (RFC 9449 §7.1) voor de huidige Flask-request.
+
+    Dunne schil rond ``core.RPROAuthCore.verify_dpop``: bouwt de proof-parameters
+    (proof-header, methode, URL) uit ``request`` en levert de rest af aan de core.
+    Returnt de introspectie-dict (permissions/groups/acr/sub) of None.
     """
-    from .dpop import DPoPError, validate_dpop_proof
-    from .helpers import _introspect_token
+    from .helpers import verify_dpop_request
 
-    oauth_base_url = current_app.config.get("OAUTH_BASE_URL")
-    if not oauth_base_url:
-        logger.error("[dpop] OAUTH_BASE_URL niet geconfigureerd")
-        return None
-
-    # De proof wordt per request gevalideerd (nooit gecachet): htm/htu/jti zijn request-gebonden.
-    try:
-        proof_jkt = validate_dpop_proof(
-            request.headers.get("DPoP"),
-            request.method,
-            _request_htu(),
-            token,
-            redis=_dpop_replay_redis(),
-        )
-    except DPoPError as e:
-        logger.info("[dpop] Proof geweigerd: %s", e)
-        return None
-
-    # Introspectie (client-geauthenticeerd) levert active + permissions/groups/acr én cnf.jkt.
-    data = _introspect_token(token, oauth_base_url)
-    if not data:
-        return None
-
-    bound_jkt = (data.get("cnf") or {}).get("jkt")
-    if not bound_jkt:
-        # Token is niet DPoP-gebonden maar wordt wél via de DPoP-scheme aangeboden → weiger.
-        # Anders zou een gewoon Bearer-token als "DPoP" met een eigen sleutel de bindingcontrole
-        # omzeilen.
-        logger.warning("[dpop] Token is niet DPoP-gebonden maar aangeboden via het DPoP-scheme")
-        return None
-    if bound_jkt != proof_jkt:
-        logger.warning("[dpop] Thumbprint-mismatch: proof=%s token=%s", proof_jkt, bound_jkt)
-        return None
-
-    return data
+    return verify_dpop_request(token, request.headers.get("DPoP"), request.method, _request_htu())
 
 
 def _get_userinfo_from_token(token):

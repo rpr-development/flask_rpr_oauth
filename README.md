@@ -68,6 +68,12 @@ pip install git+https://github.com/rpr-development/flask-rpr-oauth.git@v1.0.0
 pip install "git+https://github.com/rpr-development/flask-rpr-oauth.git[redis]"
 ```
 
+### Met MCP-ondersteuning (ASGI, zie "MCP-servers" verderop)
+
+```bash
+pip install "git+https://github.com/rpr-development/flask-rpr-oauth.git[mcp]"
+```
+
 ### In requirements.txt
 
 ```txt
@@ -460,6 +466,54 @@ moeten aanvragen, en verwachten op een tekortschietend token een `403` met
   protected-resource-metadata).
 - Gebruikt de client het `DPoP`-scheme (of staat `OAUTH_REQUIRE_DPOP` aan), dan is de
   challenge een `DPoP`-challenge in plaats van `Bearer` — ongewijzigd gedrag.
+
+## MCP-servers (ASGI) — RPRTokenVerifier
+
+Alles hierboven gaat over Flask. Voor een MCP-server (ASGI/Starlette, via de officiële
+[`mcp`-Python-SDK](https://pypi.org/project/mcp/)) is er geen Flask-app om `RPRAuth`
+aan te koppelen — dat gebruikt `flask_rpr_oauth.core.RPROAuthCore` (dezelfde
+token-verificatie als de Flask-kant: userinfo/introspectie, caching, RFC 8707
+audience-check, RFC 9449 DPoP) rechtstreeks, zonder Flask-afhankelijkheid.
+
+Installeer de optionele `mcp`-extra:
+
+```bash
+pip install "flask-rpr-oauth[mcp]"
+```
+
+```python
+from mcp.server.auth.settings import AuthSettings
+from mcp.server.mcpserver import MCPServer  # heette FastMCP vóór mcp 2.0
+from flask_rpr_oauth.mcp import RPRTokenVerifier
+
+verifier = RPRTokenVerifier(
+    auth_base_url="https://auth.roleplayreality.nl",
+    client_id="gms-mcp",
+    client_secret="...",
+    resource_id="https://gms.roleplayreality.nl/mcp",
+    # require_aud=True is hier de default (MCP-servers moeten audience-strikt zijn) —
+    # zet expliciet require_aud=False als tijdelijke opt-out.
+)
+
+server = MCPServer(
+    "RPR GMS",
+    token_verifier=verifier,
+    auth=AuthSettings(
+        issuer_url="https://auth.roleplayreality.nl",
+        resource_server_url="https://gms.roleplayreality.nl/mcp",
+        required_scopes=["gms.read"],
+    ),
+)
+```
+
+De SDK serveert zelf de protected-resource-metadata (RFC 9728) op het pad-suffix van
+`resource_server_url` — je hoeft `auth.py`'s Flask-route daarvoor niet apart te
+registreren voor een pure MCP-server.
+
+`RPRTokenVerifier.verify_token()` draait de synchrone core via `asyncio.to_thread`
+(blokkeert de event loop niet) en mapt het resultaat naar de SDK's `AccessToken`
+(`scopes`, `expires_at`, `resource`, `subject`, en de RPR-specifieke velden
+`permissions`/`groups`/`acr`/`twofa_validated`/`token_type` onder `claims`).
 
 ## Two-Factor Authentication (2FA)
 
