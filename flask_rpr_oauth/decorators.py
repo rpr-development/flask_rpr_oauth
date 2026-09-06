@@ -8,6 +8,7 @@ Automatically detects Bearer tokens and falls back to session-based auth.
 
 import logging
 from functools import wraps
+from urllib.parse import urlparse
 from flask import abort, current_app, g, session, redirect, url_for, request, jsonify
 from .models import current_user
 from .exceptions import PermissionDeniedError, GroupDeniedError
@@ -153,7 +154,9 @@ def _get_userinfo_from_token(token):
         return _authenticate_dpop_token(token)
 
     if current_app.config.get("OAUTH_REQUIRE_DPOP"):
-        logger.info("[dpop] Bearer-token geweigerd op %s: OAUTH_REQUIRE_DPOP staat aan", request.path)
+        logger.info(
+            "[dpop] Bearer-token geweigerd op %s: OAUTH_REQUIRE_DPOP staat aan", request.path
+        )
         return None
 
     return get_userinfo_from_token(token)
@@ -163,20 +166,51 @@ def _resource_metadata_url():
     """URL van het protected-resource-metadata-document van deze resource server (RFC 9728).
 
     Voorkeur voor ``OAUTH_RESOURCE_ID`` (de canonieke resource-URI van deze app); anders de
-    host van het huidige request.
+    host van het huidige request. Heeft ``OAUTH_RESOURCE_ID`` een pad (RFC 9728 §3.1, bijv.
+    ``https://gms.example/mcp``), dan wijst dit naar de pad-suffix-variant
+    (``/.well-known/oauth-protected-resource/mcp``) die ``auth.py`` in dat geval óók
+    registreert naast de root-route.
     """
-    base = current_app.config.get("OAUTH_RESOURCE_ID") or request.host_url
-    return f"{base.rstrip('/')}/.well-known/oauth-protected-resource"
+    resource_id = current_app.config.get("OAUTH_RESOURCE_ID")
+    if resource_id:
+        parsed = urlparse(resource_id)
+        path = parsed.path.rstrip("/")
+        return f"{parsed.scheme}://{parsed.netloc}/.well-known/oauth-protected-resource{path}"
+    return f"{request.host_url.rstrip('/')}/.well-known/oauth-protected-resource"
 
 
-def _bearer_unauthorized(payload, *, error_code="invalid_token", acr_values=None):
+def _default_challenge_scopes():
+    """Scopes voor de ``scope``-hint op een 401/403-``WWW-Authenticate``-challenge (RFC 6750 §3).
+
+    ``OAUTH_RESOURCE_REQUIRED_SCOPES`` (lijst of spatie-gescheiden string) indien
+    geconfigureerd; anders dezelfde scopes als de protected-resource-metadata adverteert
+    (``resource_scopes_supported()``, zonder ``offline_access``).
+    """
+    from .helpers import resource_scopes_supported
+
+    configured = current_app.config.get("OAUTH_RESOURCE_REQUIRED_SCOPES")
+    if configured is None:
+        return resource_scopes_supported()
+    if isinstance(configured, str):
+        return [s for s in configured.split() if s]
+    return list(configured)
+
+
+def _bearer_unauthorized(
+    payload, *, error_code="invalid_token", acr_values=None, required_scopes=None
+):
     """Bouw een 401-response met een RFC 6750 ``WWW-Authenticate: Bearer``-challenge.
 
-    De challenge draagt ``resource_metadata`` (RFC 9728), zodat een client bij een 401
-    automatisch de juiste authorization server + audience kan ontdekken. ``error_code`` en
-    ``acr_values`` zijn parameters zodat een RFC 9470 step-up-challenge
-    (``error="insufficient_user_authentication"``, ``acr_values="mfa"``) hier later op kan
-    aanhaken. ``payload`` blijft het bestaande JSON-body-formaat (backwards-compatibel).
+    De challenge draagt ``resource_metadata`` (RFC 9728) en, indien bekend, een ``scope``-hint
+    (RFC 6750 §3) zodat een client (bijv. een MCP-client) bij een 401 automatisch de juiste
+    authorization server, audience én scope kan ontdekken. ``error_code`` en ``acr_values``
+    zijn parameters zodat een RFC 9470 step-up-challenge
+    (``error="insufficient_user_authentication"``, ``acr_values="mfa"``) hier op aanhaakt.
+    ``payload`` blijft het bestaande JSON-body-formaat (backwards-compatibel).
+
+    RFC 6750 §3.1: droeg de request helemaal geen token, dan krijgt de challenge GEEN
+    ``error``-attribuut (alleen ``resource_metadata``/``scope``); dat onderscheid wordt hier
+    gemaakt op basis van of er daadwerkelijk een (niet-lege) token is aangeboden.
     """
     response = jsonify(payload)
     response.status_code = 401
@@ -185,7 +219,10 @@ def _bearer_unauthorized(payload, *, error_code="invalid_token", acr_values=None
     use_dpop = _request_uses_dpop() or bool(current_app.config.get("OAUTH_REQUIRE_DPOP"))
     scheme = "DPoP" if use_dpop else "Bearer"
     challenge = f'{scheme} resource_metadata="{_resource_metadata_url()}"'
-    if error_code:
+    scopes = required_scopes if required_scopes is not None else _default_challenge_scopes()
+    if scopes:
+        challenge += f', scope="{" ".join(scopes)}"'
+    if error_code and _get_bearer_token():
         challenge += f', error="{error_code}"'
     if acr_values:
         challenge += f', acr_values="{acr_values}"'
@@ -193,6 +230,30 @@ def _bearer_unauthorized(payload, *, error_code="invalid_token", acr_values=None
         from .dpop import DPOP_SIGNING_ALGS
 
         challenge += f', algs="{" ".join(DPOP_SIGNING_ALGS)}"'
+    response.headers["WWW-Authenticate"] = challenge
+    return response
+
+
+def _bearer_forbidden(payload, *, required_scopes=None, description=None):
+    """Bouw een 403-response met een RFC 6750 §3.1 ``WWW-Authenticate: Bearer``-challenge.
+
+    Gebruikt op de Bearer-token-403-paden van ``permission_required``/``group_required``
+    (en varianten) en door ``require_scope``: de JSON-``payload`` blijft exact wat de
+    aanroeper al teruggaf, alleen de header komt erbij zodat een MCP-/OAuth-client
+    machinaal weet dat ``error="insufficient_scope"`` en welke scope(s) nodig zijn.
+    """
+    response = jsonify(payload)
+    response.status_code = 403
+    use_dpop = _request_uses_dpop() or bool(current_app.config.get("OAUTH_REQUIRE_DPOP"))
+    scheme = "DPoP" if use_dpop else "Bearer"
+    challenge = (
+        f'{scheme} error="insufficient_scope", resource_metadata="{_resource_metadata_url()}"'
+    )
+    scopes = required_scopes if required_scopes is not None else _default_challenge_scopes()
+    if scopes:
+        challenge += f', scope="{" ".join(scopes)}"'
+    if description:
+        challenge += f', error_description="{description}"'
     response.headers["WWW-Authenticate"] = challenge
     return response
 
@@ -322,15 +383,13 @@ def permission_required(permission=None, **method_permissions):
                         f"{required_permission}. Available permissions: {permissions}"
                     )
 
-                    return (
-                        jsonify(
-                            {
-                                "error": "Forbidden",
-                                "message": f"{required_permission} permission required",
-                                "your_permissions": permissions,
-                            }
-                        ),
-                        403,
+                    return _bearer_forbidden(
+                        {
+                            "error": "Forbidden",
+                            "message": f"{required_permission} permission required",
+                            "your_permissions": permissions,
+                        },
+                        description=f"{required_permission} permission required",
                     )
 
                 # Store token info in flask.g for current_token proxy
@@ -428,18 +487,16 @@ def any_permission_required(*permissions, **method_permissions):
                         f"requiring one of {required_permissions}. Has: {user_permissions}"
                     )
 
-                    return (
-                        jsonify(
-                            {
-                                "error": "Forbidden",
-                                "message": (
-                                    f"One of these permissions required: "
-                                    f'{", ".join(required_permissions)}'
-                                ),
-                                "your_permissions": user_permissions,
-                            }
-                        ),
-                        403,
+                    message = (
+                        f'One of these permissions required: {", ".join(required_permissions)}'
+                    )
+                    return _bearer_forbidden(
+                        {
+                            "error": "Forbidden",
+                            "message": message,
+                            "your_permissions": user_permissions,
+                        },
+                        description=message,
                     )
 
                 g._rpr_token_info = userinfo
@@ -531,17 +588,9 @@ def group_required(group=None, **method_groups):
 
                 # Check if M2M token (M2M tokens hebben geen groups)
                 if userinfo.get("token_type") == "m2m":
-                    return (
-                        jsonify(
-                            {
-                                "error": "Forbidden",
-                                "message": (
-                                    "M2M tokens cannot be checked for group membership. "
-                                    "Use permission_required instead."
-                                ),
-                            }
-                        ),
-                        403,
+                    message = "M2M tokens cannot be checked for group membership. Use permission_required instead."
+                    return _bearer_forbidden(
+                        {"error": "Forbidden", "message": message}, description=message
                     )
 
                 groups = userinfo.get("groups", [])
@@ -551,15 +600,13 @@ def group_required(group=None, **method_groups):
                         f'Group denied: {userinfo.get("sub")} not in group {required_group}'
                     )
 
-                    return (
-                        jsonify(
-                            {
-                                "error": "Forbidden",
-                                "message": f"{required_group} group membership required",
-                                "your_groups": groups,
-                            }
-                        ),
-                        403,
+                    return _bearer_forbidden(
+                        {
+                            "error": "Forbidden",
+                            "message": f"{required_group} group membership required",
+                            "your_groups": groups,
+                        },
+                        description=f"{required_group} group membership required",
                     )
 
                 g._rpr_token_info = userinfo
@@ -648,17 +695,9 @@ def any_group_required(*groups, **method_groups):
 
                 # Check if M2M token
                 if userinfo.get("token_type") == "m2m":
-                    return (
-                        jsonify(
-                            {
-                                "error": "Forbidden",
-                                "message": (
-                                    "M2M tokens cannot be checked for group membership. "
-                                    "Use any_permission_required instead."
-                                ),
-                            }
-                        ),
-                        403,
+                    message = "M2M tokens cannot be checked for group membership. Use any_permission_required instead."
+                    return _bearer_forbidden(
+                        {"error": "Forbidden", "message": message}, description=message
                     )
 
                 user_groups = userinfo.get("groups", [])
@@ -669,18 +708,16 @@ def any_group_required(*groups, **method_groups):
                         f"{required_groups}"
                     )
 
-                    return (
-                        jsonify(
-                            {
-                                "error": "Forbidden",
-                                "message": (
-                                    f"Membership in one of these groups required: "
-                                    f'{", ".join(required_groups)}'
-                                ),
-                                "your_groups": user_groups,
-                            }
-                        ),
-                        403,
+                    message = (
+                        f'Membership in one of these groups required: {", ".join(required_groups)}'
+                    )
+                    return _bearer_forbidden(
+                        {
+                            "error": "Forbidden",
+                            "message": message,
+                            "your_groups": user_groups,
+                        },
+                        description=message,
                     )
 
                 g._rpr_token_info = userinfo
@@ -901,6 +938,93 @@ def m2m_only(f):
     return decorated_function
 
 
+def require_scope(*scopes):
+    """
+    Decorator that requires the underlying OAuth token to carry ALL given scopes.
+
+    This checks true OAuth ``scope`` (RFC 6749 §3.3), independent of RPR permissions
+    (``permission_required``) — useful for e.g. an MCP server that gates tools by scope
+    rather than by RPR permission.
+
+    Bearer token mode:
+        ``/oauth/userinfo`` doesn't return ``scope`` for user tokens, so the scope check
+        uses the (cached) introspection response instead (``helpers.get_token_scopes``,
+        RFC 7662). A missing scope returns 403 with ``WWW-Authenticate: Bearer
+        error="insufficient_scope"`` naming exactly the scopes this route requires.
+
+    Session mode:
+        Checks the ``scope`` stored on the session's OAuth token.
+
+    Example:
+        @app.route('/mcp/tools/deploy')
+        @require_scope('gms.deploy')
+        def deploy_tool():
+            return 'Deploy tool'
+    """
+    required = set(scopes)
+
+    def decorator(f):
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            if _is_bearer_token_request():
+                token = _get_bearer_token()
+                userinfo = _get_userinfo_from_token(token)
+
+                if not userinfo:
+                    return _bearer_unauthorized(
+                        {"error": "invalid_token", "message": "Invalid or expired token"}
+                    )
+
+                from .helpers import get_token_scopes
+
+                token_scopes = get_token_scopes(token)
+
+                if not required.issubset(token_scopes):
+                    logger.warning(
+                        "require_scope: %s mist scope(s) %s (heeft: %s)",
+                        userinfo.get("sub", "unknown"),
+                        sorted(required - token_scopes),
+                        sorted(token_scopes),
+                    )
+                    return _bearer_forbidden(
+                        {
+                            "error": "Forbidden",
+                            "message": f'Missing required scope(s): {", ".join(sorted(required))}',
+                            "your_scopes": sorted(token_scopes),
+                        },
+                        required_scopes=sorted(required),
+                        description=f'Missing required scope(s): {", ".join(sorted(required))}',
+                    )
+
+                g._rpr_token_info = userinfo
+                return f(*args, **kwargs)
+
+            # Session-based (browser mode): scope lives on the stored OAuth token.
+            if not current_user.is_authenticated:
+                abort(401)
+
+            blocked = _check_user_status()
+            if blocked:
+                return blocked
+
+            token_scopes = set(session.get("oauth_token", {}).get("scope", "").split())
+            if not required.issubset(token_scopes):
+                logger.warning(
+                    "require_scope: user %s mist scope(s) %s",
+                    current_user.get_id(),
+                    sorted(required - token_scopes),
+                )
+                raise PermissionDeniedError(
+                    message=f'Missing required scope(s): {", ".join(sorted(required))}'
+                )
+
+            return f(*args, **kwargs)
+
+        return decorated_function
+
+    return decorator
+
+
 __all__ = [
     "login_required",
     "permission_required",
@@ -908,6 +1032,7 @@ __all__ = [
     "group_required",
     "any_group_required",
     "require_2fa",
+    "require_scope",
     "user_only",
     "m2m_only",
 ]

@@ -163,6 +163,12 @@ app.config['OAUTH_AUTO_VALIDATE'] = True
 # geweigerd (401). Tokens zonder aud (legacy) blijven overal geldig.
 app.config['OAUTH_RESOURCE_ID'] = 'https://gms.roleplayreality.nl'
 
+# Strikte audience-handhaving (default: False). Vereist OAUTH_RESOURCE_ID. Zonder
+# deze vlag blijft een token zonder aud-claim overal geldig (legacy-gedrag); met
+# OAUTH_REQUIRE_AUD=True wordt zo'n token ook geweigerd. Aanbevolen voor resource
+# servers die alleen RFC 8707-bewuste clients (o.a. MCP) bedienen.
+app.config['OAUTH_REQUIRE_AUD'] = False
+
 # Token-revocatie bij logout (RFC 7009, default: True). /auth/logout trekt de
 # sessietokens server-naar-server in, zodat ze óók sterven als de gebruiker de
 # end_session-bevestiging op de auth server nooit afmaakt. Best-effort.
@@ -233,8 +239,23 @@ app.config['OAUTH_USERINFO_CACHE_MAXSIZE'] = 1000
 
 # Scopes die je in het RFC 9728 protected-resource-metadata-document
 # (/.well-known/oauth-protected-resource) wilt adverteren. Zonder deze waarde
-# wordt OAUTH_SCOPE gebruikt.
+# wordt OAUTH_SCOPE gebruikt. `offline_access` wordt hier altijd uit gefilterd
+# (het is een refresh-scope, geen scope om voor deze resource te vragen) — met
+# een warning als je hem er zelf in zet.
 app.config['OAUTH_RESOURCE_SCOPES_SUPPORTED'] = ['openid', 'profile', 'email']
+
+# Naam/documentatie van deze resource server in het metadata-document (RFC 9728).
+# OAUTH_RESOURCE_NAME valt terug op de Flask-appnaam; OAUTH_RESOURCE_DOCUMENTATION
+# wordt alleen opgenomen als je hem zet.
+app.config['OAUTH_RESOURCE_NAME'] = 'RPR GMS'
+app.config['OAUTH_RESOURCE_DOCUMENTATION'] = 'https://docs.roleplayreality.nl/gms/api'
+
+# Scopes voor de `scope`-hint op een 401/403 WWW-Authenticate-challenge (RFC 6750
+# §3, zie "Scope-challenges voor MCP-clients" verderop). Lijst of spatie-
+# gescheiden string. Zonder deze waarde worden dezelfde scopes gebruikt als
+# OAUTH_RESOURCE_SCOPES_SUPPORTED (zonder offline_access); een lege lijst laat
+# het `scope`-attribuut helemaal weg.
+app.config['OAUTH_RESOURCE_REQUIRED_SCOPES'] = ['gms.read', 'gms.write']
 
 # Session configuration (voor Redis sessions)
 app.config['SESSION_TYPE'] = 'redis'
@@ -403,6 +424,42 @@ De `@require_2fa` decorator:
 - Redirect naar auth server met `acr_values=mfa` als 2FA ontbreekt (step-up)
 - Auth server toont alleen het 2FA-scherm, geen wachtwoord opnieuw vragen
 - Redirect terug naar originele URL na 2FA voltooiing
+
+### @require_scope
+
+```python
+from flask_rpr_oauth import require_scope
+
+@app.route('/mcp/tools/deploy')
+@require_scope('gms.deploy', 'gms.write')
+def deploy_tool():
+    return "Deploy tool"
+```
+
+Eist dat het token álle opgegeven OAuth-`scope`s draagt — los van RPR-permissies
+(`@permission_required`). Nuttig voor bijv. een MCP-server die tools op scope gate.
+Ontbrekende scope(s) geven `403` met `WWW-Authenticate: Bearer
+error="insufficient_scope"` (zie de volgende sectie).
+
+## Scope-challenges voor MCP-clients
+
+MCP-clients lezen `scope` uit de `WWW-Authenticate`-header om te weten welke scopes ze
+moeten aanvragen, en verwachten op een tekortschietend token een `403` met
+`error="insufficient_scope"` (RFC 6750 §3, MCP-spec 2026-07-28).
+
+- **401** (`@login_required` en varianten, ongeldig/verlopen/verkeerde-audience-token):
+  `WWW-Authenticate: Bearer error="invalid_token", resource_metadata="...", scope="..."`.
+  Droeg de request helemaal geen token, dan ontbreekt `error` (RFC 6750 §3.1) en blijven
+  alleen `resource_metadata`/`scope` over.
+- **403** (`@permission_required`, `@any_permission_required`, `@group_required`,
+  `@any_group_required`, `@require_scope`): `WWW-Authenticate: Bearer
+  error="insufficient_scope", resource_metadata="...", scope="..."`. De JSON-body blijft
+  exact zoals voorheen; alleen de header komt erbij. Bij `@require_scope` bevat `scope`
+  precies de scopes die die route vereist; bij de andere decorators de resource-brede
+  `OAUTH_RESOURCE_REQUIRED_SCOPES` (of, zonder die config, dezelfde scopes als de
+  protected-resource-metadata).
+- Gebruikt de client het `DPoP`-scheme (of staat `OAUTH_REQUIRE_DPOP` aan), dan is de
+  challenge een `DPoP`-challenge in plaats van `Bearer` — ongewijzigd gedrag.
 
 ## Two-Factor Authentication (2FA)
 
@@ -772,6 +829,7 @@ De package gebruikt pure Flask sessions voor authenticatie, zonder Flask-Login d
 | `@group_required('group')` | Vereist specifieke groep | `@group_required('staff')` |
 | `@any_group_required('g1', 'g2')` | Vereist één van de groepen | `@any_group_required('vip', 'premium')` |
 | `@require_2fa` | Vereist 2FA validatie | `@require_2fa` |
+| `@require_scope('s1', 's2')` | Vereist OAuth-scope(s), los van RPR-permissies | `@require_scope('gms.deploy')` |
 
 ### Current User Properties
 

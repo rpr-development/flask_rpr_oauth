@@ -111,3 +111,31 @@ class TestAudienceCheckIntrospection:
             patch("requests.post", return_value=_introspect_response(RESOURCE)),
         ):
             assert get_userinfo_from_token("tok-7") is not None
+
+
+class TestRequireAud:
+    """OAUTH_REQUIRE_AUD (default False): een token zonder aud alsnog weigeren."""
+
+    def test_missing_aud_rejected_when_required(self, app):
+        app.config["OAUTH_RESOURCE_ID"] = RESOURCE
+        app.config["OAUTH_REQUIRE_AUD"] = True
+        with app.app_context(), patch("requests.get", return_value=_userinfo_response(None)):
+            assert get_userinfo_from_token("tok-8") is None
+
+    def test_missing_aud_accepted_by_default(self, app):
+        """Zonder OAUTH_REQUIRE_AUD blijft een token zonder aud gewoon geldig (ongewijzigd)."""
+        app.config["OAUTH_RESOURCE_ID"] = RESOURCE
+        with app.app_context(), patch("requests.get", return_value=_userinfo_response(None)):
+            assert get_userinfo_from_token("tok-9") is not None
+
+    def test_matching_aud_still_accepted_when_required(self, app):
+        app.config["OAUTH_RESOURCE_ID"] = RESOURCE
+        app.config["OAUTH_REQUIRE_AUD"] = True
+        with app.app_context(), patch("requests.get", return_value=_userinfo_response(RESOURCE)):
+            assert get_userinfo_from_token("tok-10") is not None
+
+    def test_require_aud_without_resource_id_has_no_effect(self, app):
+        """OAUTH_REQUIRE_AUD zonder OAUTH_RESOURCE_ID is een no-op (geen handhaving mogelijk)."""
+        app.config["OAUTH_REQUIRE_AUD"] = True
+        with app.app_context(), patch("requests.get", return_value=_userinfo_response(None)):
+            assert get_userinfo_from_token("tok-11") is not None

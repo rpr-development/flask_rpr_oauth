@@ -1285,30 +1285,55 @@ class RPRAuth:
         Velden:
             - ``resource``: ``OAUTH_RESOURCE_ID`` (canonieke resource-URI) of de request-host.
             - ``authorization_servers``: ``[OAUTH_BASE_URL]``.
-            - ``scopes_supported``: ``OAUTH_RESOURCE_SCOPES_SUPPORTED`` of, bij afwezigheid,
-              afgeleid uit ``OAUTH_SCOPE``.
+            - ``scopes_supported``: zie ``resource_scopes_supported()`` (``helpers.py``);
+              ``offline_access`` wordt daar altijd gefilterd.
             - ``bearer_methods_supported``: ``["header"]`` (Authorization: Bearer).
+            - ``resource_name``: ``OAUTH_RESOURCE_NAME``, of anders de Flask-appnaam.
+            - ``resource_documentation``: ``OAUTH_RESOURCE_DOCUMENTATION``, alleen als gezet.
+            - ``dpop_bound_access_tokens_required``: ``OAUTH_REQUIRE_DPOP`` (RFC 9449).
+            - ``dpop_signing_alg_values_supported``: de algoritmes die ``dpop.py`` accepteert.
         """
+        from .dpop import DPOP_SIGNING_ALGS
+        from .helpers import resource_scopes_supported
+
         resource = current_app.config.get("OAUTH_RESOURCE_ID") or request.host_url.rstrip("/")
-        scopes = current_app.config.get("OAUTH_RESOURCE_SCOPES_SUPPORTED")
-        if scopes is None:
-            scopes = current_app.config.get("OAUTH_SCOPE", "openid profile email").split()
-        return jsonify(
-            {
-                "resource": resource,
-                "authorization_servers": [current_app.config["OAUTH_BASE_URL"]],
-                "scopes_supported": scopes,
-                "bearer_methods_supported": ["header"],
-            }
-        )
+        metadata = {
+            "resource": resource,
+            "authorization_servers": [current_app.config["OAUTH_BASE_URL"]],
+            "scopes_supported": resource_scopes_supported(),
+            "bearer_methods_supported": ["header"],
+            "resource_name": current_app.config.get("OAUTH_RESOURCE_NAME") or current_app.name,
+            "dpop_bound_access_tokens_required": bool(current_app.config.get("OAUTH_REQUIRE_DPOP")),
+            "dpop_signing_alg_values_supported": DPOP_SIGNING_ALGS,
+        }
+        documentation = current_app.config.get("OAUTH_RESOURCE_DOCUMENTATION")
+        if documentation:
+            metadata["resource_documentation"] = documentation
+        return jsonify(metadata)
 
     def _register_metadata_routes(self, app):
-        """Registreer het RFC 9728-metadata-endpoint op root-niveau (buiten de /auth-prefix)."""
+        """Registreer het RFC 9728-metadata-endpoint op root-niveau (buiten de /auth-prefix).
+
+        RFC 9728 §3.1: heeft ``OAUTH_RESOURCE_ID`` een pad (bijv. ``https://gms.example/mcp``),
+        dan registreren we ook de pad-suffix-variant
+        (``/.well-known/oauth-protected-resource/mcp``) naast de root-route, zodat clients
+        die de spec letterlijk volgen het document ook daar vinden. ``_resource_metadata_url()``
+        in ``decorators.py`` wijst in dat geval naar de pad-variant.
+        """
         app.add_url_rule(
             "/.well-known/oauth-protected-resource",
             "oauth_protected_resource",
             self._handle_protected_resource_metadata,
         )
+        resource_id = app.config.get("OAUTH_RESOURCE_ID")
+        if resource_id:
+            path = urlparse(resource_id).path.rstrip("/")
+            if path:
+                app.add_url_rule(
+                    f"/.well-known/oauth-protected-resource{path}",
+                    "oauth_protected_resource_path",
+                    self._handle_protected_resource_metadata,
+                )
         logger.info("Protected-resource-metadata route geregistreerd (RFC 9728)")
 
     def _register_partitioned_cookie_handler(self, app):

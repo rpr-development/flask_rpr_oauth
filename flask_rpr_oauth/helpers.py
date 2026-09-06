@@ -96,20 +96,60 @@ def _audience_allowed(data: dict) -> bool:
     (bijv. ``https://gms.roleplayreality.nl``). Regels:
 
     - geen ``OAUTH_RESOURCE_ID`` geconfigureerd → geen handhaving (opt-in);
-    - token zonder ``aud`` (legacy/ongebonden) → overal geldig;
+    - token zonder ``aud`` (legacy/ongebonden) → overal geldig, tenzij ``OAUTH_REQUIRE_AUD``
+      aanstaat (default ``False``) — dan is een ontbrekende ``aud`` ook een weigering;
     - token mét ``aud`` → moet exact matchen, anders wordt het token geweigerd
       alsof het ongeldig is (401 door de aanroepende decorator).
     """
     resource_id = current_app.config.get("OAUTH_RESOURCE_ID")
-    aud = data.get("aud")
-    if not resource_id or not aud or aud == resource_id:
+    if not resource_id:
         return True
+
+    aud = data.get("aud")
+    if not aud:
+        if current_app.config.get("OAUTH_REQUIRE_AUD", False):
+            logger.warning("Token geweigerd: geen aud-claim, maar OAUTH_REQUIRE_AUD vereist er een")
+            return False
+        return True
+
+    if aud == resource_id:
+        return True
+
     # Geen waarden loggen: de aud is afgeleid van het aangeboden token en de resource-id
     # is een config-waarde (CodeQL: config = gevoelig). De sleutelnaam volstaat voor ops.
     logger.warning(
         "Token geweigerd: token-aud hoort niet bij deze resource server (OAUTH_RESOURCE_ID)"
     )
     return False
+
+
+def resource_scopes_supported() -> list:
+    """OAuth-scopes die deze resource server ondersteunt (RFC 9728 ``scopes_supported``).
+
+    Gedeeld door de protected-resource-metadata (``auth.py``) en de ``scope``-hint op
+    401/403 ``WWW-Authenticate``-challenges (``decorators.py``), zodat beide altijd
+    dezelfde scopes adverteren. Bron: ``OAUTH_RESOURCE_SCOPES_SUPPORTED`` (lijst of
+    spatie-gescheiden string); zonder die config afgeleid uit ``OAUTH_SCOPE``.
+
+    ``offline_access`` wordt altijd gefilterd: het is een refresh-scope, niet iets wat een
+    client zou moeten aanvragen om deze resource te mogen gebruiken. Met een warning als de
+    eigenaar hem zelf in ``OAUTH_RESOURCE_SCOPES_SUPPORTED`` heeft gezet.
+    """
+    scopes = current_app.config.get("OAUTH_RESOURCE_SCOPES_SUPPORTED")
+    if scopes is None:
+        scopes = current_app.config.get("OAUTH_SCOPE", "openid profile email").split()
+    elif isinstance(scopes, str):
+        scopes = scopes.split()
+    else:
+        scopes = list(scopes)
+
+    if "offline_access" in scopes:
+        logger.warning(
+            "OAUTH_RESOURCE_SCOPES_SUPPORTED bevat offline_access — dit is een refresh-scope, "
+            "geen scope die clients voor deze resource moeten aanvragen; wordt gefilterd."
+        )
+        scopes = [s for s in scopes if s != "offline_access"]
+    return scopes
 
 
 def get_userinfo_from_token(token):
@@ -222,6 +262,34 @@ def _introspect_token(token: str, oauth_base_url: str) -> dict | None:
     except Exception as e:
         logger.error(f"Token introspection error: {e}")
         return None
+
+
+def get_token_scopes(token: str) -> set:
+    """Geef de OAuth-``scope``s van ``token`` terug, voor gebruik door ``require_scope``.
+
+    ``/oauth/userinfo`` geeft voor user-tokens geen ``scope`` terug (alleen introspectie
+    doet dat, RFC 7662) — een cache-hit zonder ``scope``-veld (bijv. eerder gezet door
+    ``get_userinfo_from_token()``) triggert daarom alsnog een introspectie-call, die de
+    cache-entry vervangt met de rijkere introspectie-respons. Hergebruikt dezelfde
+    cache en ``_audience_allowed``-controle als het bestaande introspectie-pad.
+
+    Returns:
+        set: de scopes van het token, of een lege set als het token ongeldig is of geen
+             scopes draagt.
+    """
+    cached = _cache_get(token)
+    if cached is not None and "scope" in cached:
+        data = cached
+    else:
+        oauth_base_url = current_app.config.get("OAUTH_BASE_URL")
+        if not oauth_base_url:
+            logger.error("OAUTH_BASE_URL not configured")
+            return set()
+        data = _introspect_token(token, oauth_base_url)
+
+    if not data:
+        return set()
+    return set((data.get("scope") or "").split())
 
 
 def clear_userinfo_cache():

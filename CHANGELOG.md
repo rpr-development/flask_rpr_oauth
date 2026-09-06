@@ -10,6 +10,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** legacy `/auth/webhook/*` receivers removed (zie Removed).
 
 ### Added
+- **RFC 6750 §3 scope-challenges (MCP-spec 2026-07-28)**: `WWW-Authenticate`-challenges
+  dragen nu een `scope`-hint. `401`'s (`@login_required` en varianten) melden `error=
+  "invalid_token"` alleen als de request daadwerkelijk een token droeg (§3.1: zonder token
+  géén `error`-attribuut, alleen `resource_metadata`/`scope`). De Bearer-403-paden van
+  `@permission_required`, `@any_permission_required`, `@group_required` en
+  `@any_group_required` krijgen er een `error="insufficient_scope"`-header bij (JSON-body
+  ongewijzigd). Nieuwe config `OAUTH_RESOURCE_REQUIRED_SCOPES` (lijst of spatie-gescheiden
+  string) stuurt de `scope`-hint; default = de PRM `scopes_supported` (zonder
+  `offline_access`).
+- **`@require_scope(*scopes)`**: nieuwe decorator die eist dat het token álle opgegeven
+  OAuth-scopes draagt, los van RPR-permissies (`@permission_required`) — bedoeld voor bijv.
+  een MCP-server die tools op scope gate. Userinfo geeft voor user-tokens geen `scope`
+  terug; de decorator valt dan terug op de (gecachete) introspectie-respons. Ontbrekende
+  scope(s) geven `403` met `error="insufficient_scope"` en precies de vereiste scopes.
+- **PRM-uitbreiding**: `/.well-known/oauth-protected-resource` bevat nu ook `resource_name`
+  (`OAUTH_RESOURCE_NAME`, default de Flask-appnaam), `resource_documentation`
+  (`OAUTH_RESOURCE_DOCUMENTATION`, alleen als gezet), `dpop_bound_access_tokens_required`
+  (`OAUTH_REQUIRE_DPOP`) en `dpop_signing_alg_values_supported`. `offline_access` wordt
+  altijd uit `scopes_supported` gefilterd (met een warning als die er zelf in gezet is).
+  Heeft `OAUTH_RESOURCE_ID` een pad (RFC 9728 §3.1, bijv. `https://gms.example/mcp`), dan
+  wordt ook de pad-suffix-variant geregistreerd
+  (`/.well-known/oauth-protected-resource/mcp`) en wijst de `WWW-Authenticate`-header
+  daarnaar.
+- **`OAUTH_REQUIRE_AUD`** (default `False`): met `OAUTH_RESOURCE_ID` gezet, weigert een
+  token zonder `aud`-claim ook (in plaats van overal geldig te blijven). Strikter alternatief
+  voor resource servers die alleen RFC 8707-bewuste clients bedienen.
 - **RFC 9728 Protected Resource Metadata** op `/.well-known/oauth-protected-resource`:
   publiek discovery-document (`resource`, `authorization_servers`, `scopes_supported`,
   `bearer_methods_supported`) waarmee een OAuth-/MCP-client bij een `401` (via de

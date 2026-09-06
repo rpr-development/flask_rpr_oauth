@@ -50,6 +50,58 @@ class TestProtectedResourceMetadata:
         resp = app.test_client().get("/.well-known/oauth-protected-resource")
         assert resp.get_json()["scopes_supported"] == ["openid", "gms.read"]
 
+    def test_metadata_filters_offline_access(self):
+        """offline_access is een refresh-scope, geen scope om voor deze resource te vragen."""
+        app = _make_app(OAUTH_RESOURCE_SCOPES_SUPPORTED=["openid", "offline_access"])
+        resp = app.test_client().get("/.well-known/oauth-protected-resource")
+        assert resp.get_json()["scopes_supported"] == ["openid"]
+
+    def test_metadata_resource_name_defaults_to_app_name(self):
+        app = _make_app()
+        resp = app.test_client().get("/.well-known/oauth-protected-resource")
+        assert resp.get_json()["resource_name"] == app.name
+
+    def test_metadata_resource_name_configurable(self):
+        app = _make_app(OAUTH_RESOURCE_NAME="RPR GMS")
+        resp = app.test_client().get("/.well-known/oauth-protected-resource")
+        assert resp.get_json()["resource_name"] == "RPR GMS"
+
+    def test_metadata_resource_documentation_only_when_set(self):
+        app = _make_app()
+        data = app.test_client().get("/.well-known/oauth-protected-resource").get_json()
+        assert "resource_documentation" not in data
+
+        app_with_docs = _make_app(OAUTH_RESOURCE_DOCUMENTATION="https://docs.example/gms")
+        data = app_with_docs.test_client().get("/.well-known/oauth-protected-resource").get_json()
+        assert data["resource_documentation"] == "https://docs.example/gms"
+
+    def test_metadata_dpop_fields(self):
+        app = _make_app(OAUTH_REQUIRE_DPOP=True)
+        data = app.test_client().get("/.well-known/oauth-protected-resource").get_json()
+        assert data["dpop_bound_access_tokens_required"] is True
+        assert "ES256" in data["dpop_signing_alg_values_supported"]
+
+    def test_metadata_dpop_fields_default_false(self):
+        app = _make_app()
+        data = app.test_client().get("/.well-known/oauth-protected-resource").get_json()
+        assert data["dpop_bound_access_tokens_required"] is False
+        assert "ES256" in data["dpop_signing_alg_values_supported"]
+
+    def test_metadata_path_suffix_route_registered(self):
+        """RFC 9728 §3.1: OAUTH_RESOURCE_ID met een pad registreert ook de pad-suffix-variant."""
+        app = _make_app(OAUTH_RESOURCE_ID="https://gms.roleplayreality.nl/mcp")
+        client = app.test_client()
+        resp_root = client.get("/.well-known/oauth-protected-resource")
+        resp_path = client.get("/.well-known/oauth-protected-resource/mcp")
+        assert resp_root.status_code == 200
+        assert resp_path.status_code == 200
+        assert resp_root.get_json() == resp_path.get_json()
+
+    def test_metadata_no_path_suffix_route_without_path(self):
+        app = _make_app(OAUTH_RESOURCE_ID="https://gms.roleplayreality.nl")
+        resp = app.test_client().get("/.well-known/oauth-protected-resource/mcp")
+        assert resp.status_code == 404
+
 
 class TestWwwAuthenticateOn401:
     """RFC 6750 — 401's van bearer-beschermde routes dragen een WWW-Authenticate-challenge."""
@@ -70,3 +122,18 @@ class TestWwwAuthenticateOn401:
             in challenge
         )
         assert 'error="invalid_token"' in challenge
+
+    def test_bearer_401_points_to_path_suffix_metadata_url(self):
+        """RFC 9728 §3.1: heeft OAUTH_RESOURCE_ID een pad, dan wijst de challenge daarnaar."""
+        app = _make_app(OAUTH_RESOURCE_ID="https://gms.roleplayreality.nl/mcp")
+        with (
+            patch("flask_rpr_oauth.decorators._is_bearer_token_request", return_value=True),
+            patch("flask_rpr_oauth.decorators._get_bearer_token", return_value="tok"),
+            patch("flask_rpr_oauth.decorators._get_userinfo_from_token", return_value=None),
+        ):
+            resp = app.test_client().get("/protected")
+        challenge = resp.headers.get("WWW-Authenticate", "")
+        assert (
+            'resource_metadata="https://gms.roleplayreality.nl/.well-known/oauth-protected-resource/mcp"'
+            in challenge
+        )
