@@ -830,6 +830,42 @@ class RPRAuth:
 
         return dict(claims)
 
+    def _refresh_access_token(self) -> bool:
+        """
+        Ververs het access token op de achtergrond via de opgeslagen refresh_token.
+
+        De refresh-grant op de auth server is standaard niet-roterend (geeft geen nieuw
+        refresh_token terug), maar dat is per client instelbaar — clients met
+        ``rotate_refresh_tokens`` krijgen wél een nieuw refresh_token. ``setdefault``
+        dekt beide gevallen: bij een nieuw refresh_token wordt dat gebruikt, anders
+        blijft het bestaande behouden zodat de sessie na deze refresh niet haar
+        refresh-vermogen verliest.
+
+        Een geslaagde refresh laat de rest van de sessie (oauth_user, permissions,
+        acr, _admin_2fa_granted, …) ongemoeid — alleen session["oauth_token"] wordt
+        bijgewerkt.
+
+        Returns:
+            bool: True als het access token ververst is, False als refresh niet
+                  mogelijk was (geen refresh_token, of deze is zelf verlopen/ingetrokken).
+        """
+        token = session.get("oauth_token") or {}
+        refresh_token = token.get("refresh_token")
+        if not refresh_token:
+            return False
+
+        try:
+            new_token = self.auth_server.fetch_access_token(refresh_token=refresh_token)
+            new_token.setdefault("refresh_token", refresh_token)
+            session["oauth_token"] = new_token
+            session.modified = True
+            logger.info("Token succesvol gerefreshed via refresh_token")
+            return True
+
+        except Exception as e:
+            logger.warning(f"Token refresh mislukt: {e}")
+            return False
+
     def _validate_logout_token(self, logout_token):
         """Valideer een OIDC Back-Channel Logout 1.0 logout token; geef de ``sub`` terug of None.
 
@@ -1414,9 +1450,21 @@ class RPRAuth:
                 return None
 
         if not self.validate_token():
+            # Access token verlopen (standaard na 1 uur) — probeer eerst stil te
+            # verversen via de refresh_token (30 dagen geldig) vóórdat de hele
+            # sessie wordt gewist. Zonder dit verliest de gebruiker bij elk verlopen
+            # access token zijn hele sessie, inclusief step-up vlaggen zoals
+            # _admin_2fa_granted, en moet hij/zij alles (incl. 2FA) opnieuw doen.
+            if self._refresh_access_token():
+                session["_token_validated_at"] = time.time()
+                session.modified = True
+                return None
+
             # §6 laag-2: _reauth_or_redirect honoreert embedded (FiveM NUI) sessies via een
             # postMessage-signaal i.p.v. een in-CEF redirect naar de auth-server.
-            return self._reauth_or_redirect("Sessie-token niet meer geldig, sessie gewist")
+            return self._reauth_or_redirect(
+                "Sessie-token niet meer geldig (ook na refresh-poging), sessie gewist"
+            )
 
         session["_token_validated_at"] = time.time()
         session.modified = True
@@ -1683,8 +1731,16 @@ class RPRAuth:
                 logger.info(f"[require_fresh_2fa] 2FA gevalideerd, {session_key}=True")
                 return None
             else:
-                logger.warning("[require_fresh_2fa] Terug van reauth maar 2FA niet gevalideerd")
-                return None  # Aanroeper handelt de foutmelding af
+                # 2FA niet bevestigd na OAuth-callback (bijv. sessieproblemen) — opnieuw starten.
+                logger.warning(
+                    "[require_fresh_2fa] Terug van reauth maar 2FA niet gevalideerd, flow opnieuw starten"
+                )
+                from flask import request as flask_request
+
+                session[pending_key] = True
+                session["next"] = flask_request.url
+                session.modified = True
+                return self.require_2fa_reauth(force_fresh=True)
 
         # Eerste keer: stuur naar 2FA en dwing verse verificatie af
         from flask import request as flask_request
