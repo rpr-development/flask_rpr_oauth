@@ -4,7 +4,7 @@ import pytest
 from flask import Flask
 
 from flask_rpr_oauth import RPRAuth
-import flask_rpr_oauth.auth as auth_module
+import flask_rpr_oauth.helpers as helpers_module
 
 ISSUER = "https://auth.test.nl"
 CLIENT_ID = "test-client"
@@ -46,7 +46,7 @@ def client(app, auth):
 def valid_token(monkeypatch):
     """Laat elke Bearer-token valideren als M2M-token mét de provisioning-permissie."""
     monkeypatch.setattr(
-        auth_module,
+        helpers_module,
         "get_userinfo_from_token",
         lambda token: {"sub": "scim-worker-internal", "permissions": [PERMISSION]},
     )
@@ -74,19 +74,28 @@ def test_scim_zonder_token_geeft_401(client):
 
 
 def test_scim_ongeldig_token_geeft_401(client, monkeypatch):
-    monkeypatch.setattr(auth_module, "get_userinfo_from_token", lambda token: None)
+    monkeypatch.setattr(helpers_module, "get_userinfo_from_token", lambda token: None)
     resp = client.put("/scim/v2/Users/42", json=RESOURCE, headers=_headers())
     assert resp.status_code == 401
 
 
 def test_scim_zonder_permissie_geeft_403(client, monkeypatch):
     monkeypatch.setattr(
-        auth_module,
+        helpers_module,
         "get_userinfo_from_token",
         lambda token: {"sub": "andere-client", "permissions": ["iets.anders"]},
     )
     resp = client.put("/scim/v2/Users/42", json=RESOURCE, headers=_headers())
     assert resp.status_code == 403
+
+
+def test_scim_require_dpop_rejects_plain_bearer(app, auth, valid_token):
+    """OAUTH_REQUIRE_DPOP beschermt ook /scim/v2/*: een plain Bearer-token wordt geweigerd,
+    ook al zou de (gemockte) userinfo-lookup een geldig M2M-token teruggeven."""
+    app.config["OAUTH_REQUIRE_DPOP"] = True
+    client = app.test_client()
+    resp = client.put("/scim/v2/Users/42", json=RESOURCE, headers=_headers())
+    assert resp.status_code == 401
 
 
 # ------------------------------------------------------------------ sync (PUT/POST)

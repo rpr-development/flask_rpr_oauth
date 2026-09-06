@@ -714,6 +714,27 @@ configureert alleen (optioneel) callbacks. De berichten zijn **ondertekende JWT'
 handtekening ís de authenticatie. De package valideert handtekening, `iss` (de
 discovery-issuer), `aud` en de events-claim; alles wat niet klopt wordt met 400 geweigerd.
 
+Aanvullende hardening (gedeeld tussen back-channel logout en SSF, beide via dezelfde
+SET-validatie):
+
+- **`typ`-header**: een logout token moet `typ: logout+jwt` dragen, een SSF-SET
+  `typ: secevent+jwt` (RPR-API zet deze altijd). Ontbrekend of verkeerd → geweigerd.
+- **jti-replaycache**: elke SET moet een unieke `jti` dragen (RFC 8417 §2.2 REQUIRED);
+  een herhaald aanbod van exact dezelfde SET wordt geweigerd (Redis `SET NX EX`, TTL
+  op de resterende geldigheid van het token). Hergebruikt `OAUTH_LOGOUT_REDIS_URL`/
+  `SESSION_REDIS`; zonder Redis is dit **fail-open** (met een warning in de logs),
+  consistent met de DPoP-jti-cache.
+- **JWKS-herlaad bij sleutelrotatie**: draagt een SET een `kid` die niet in de
+  gecachete JWKS zit, dan probeert de package één keer een geforceerde herlaad
+  (rate-limited op maximaal 1x per 60 seconden per issuer) vóórdat het token als
+  ongeldig wordt afgewezen.
+- **Cache-invalidatie**: een back-channel-logout, en de SSF-events
+  `account-disabled`/`account-purged`/`session-revoked`, verwijderen ook meteen alle
+  userinfo/introspectie-cache-entries van die gebruiker — een nog niet verlopen
+  Bearer-cache-entry (`OAUTH_USERINFO_CACHE_TTL`) zou anders de oude permissies/groepen
+  nog even kunnen laten doorwerken. `credential-change` doet dit bewust niet (geen
+  sessie-/autorisatie-impact op zichzelf).
+
 ### Back-channel logout (OIDC Back-Channel Logout 1.0)
 
 Bij centraal uitloggen, een ban of REVIEW-status POST de auth-server een `logout_token`
@@ -778,7 +799,9 @@ Met SCIM duwt de auth-server het **user-bestand** actief naar je app: aanmaken, 
 status-/groepswijzigingen en verwijdering, zodat lokale accounts nooit uit de pas lopen.
 De package levert de endpoints (`/scim/v2/Users[/<id>]`); jouw app implementeert alleen
 wat er lokaal moet gebeuren, via callbacks. **Default UIT** — zet 'm pas aan als de
-callbacks er zijn.
+callbacks er zijn. De toegangscontrole loopt via hetzelfde DPoP-bewuste pad als de
+Flask-decorators: staat `OAUTH_REQUIRE_DPOP` aan, dan beschermt dat ook `/scim/v2/*`
+(een plain Bearer-token wordt dan geweigerd).
 
 Contract met de auth-server (de scim-worker):
 

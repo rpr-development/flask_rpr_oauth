@@ -48,9 +48,29 @@ class _FakeRedis:
     def get(self, key):
         return self.store.get(key)
 
+    def set(self, key, value, nx=False, ex=None):
+        """Minimale SET NX EX-emulatie, voor de jti-replaycache (net als dpop.py's redis-client)."""
+        if nx and key in self.store:
+            return False
+        self.store[key] = value
+        return True
+
+
+_UNSET = object()
+
 
 def _build_set(
-    private_pem, event_uri, *, aud=CLIENT_ID, sub="99", nonce=None, iss=ISSUER, kid=KID, sub_id=None
+    private_pem,
+    event_uri,
+    *,
+    aud=CLIENT_ID,
+    sub="99",
+    nonce=None,
+    iss=ISSUER,
+    kid=KID,
+    sub_id=None,
+    jti="xyz",
+    typ=_UNSET,
 ):
     now = int(time.time())
     payload = {
@@ -58,7 +78,7 @@ def _build_set(
         "aud": aud,
         "iat": now,
         "exp": now + 120,
-        "jti": "xyz",
+        "jti": jti,
         "events": {event_uri: {}},
     }
     if sub is not None:
@@ -67,7 +87,11 @@ def _build_set(
         payload["sub_id"] = sub_id
     if nonce:
         payload["nonce"] = nonce
-    header = {"alg": "RS256", "kid": kid, "typ": "secevent+jwt"}
+    header = {"alg": "RS256", "kid": kid}
+    if typ is _UNSET:
+        header["typ"] = "secevent+jwt"
+    elif typ is not None:
+        header["typ"] = typ
     tok = jose_jwt.encode(header, payload, private_pem)
     return tok.decode() if isinstance(tok, bytes) else tok
 
@@ -194,7 +218,9 @@ def test_unknown_event_rejected(client, rsa_material, fake_redis):
     token = _build_set(private_pem, "https://example.com/some/unknown-event")
     resp = client.post("/auth/ssf", data=token, content_type=SECEVENT)
     assert resp.status_code == 400
-    assert fake_redis.store == {}
+    # De SET zelf is geldig ondertekend (dus de jti wordt geconsumeerd voor replay-
+    # preventie), maar er is geen bekend event → geen logout-markering.
+    assert fake_redis.store == {"rpr:set:jti:xyz": "1"}
 
 
 def test_bad_signature_rejected(client, rsa_material, fake_redis):
@@ -241,3 +267,78 @@ def test_logout_token_still_works(client, rsa_material, fake_redis):
     resp = client.post("/auth/backchannel-logout", data={"logout_token": token})
     assert resp.status_code == 200
     assert fake_redis.store.get("rpr:bcl:logout:99") is not None
+
+
+# ------------------------------------------------------------------ typ-header (RFC 8417 §2.2)
+
+
+def test_wrong_typ_rejected(client, rsa_material, fake_redis):
+    private_pem, _ = rsa_material
+    token = _build_set(private_pem, RISC_ACCOUNT_DISABLED, typ="logout+jwt")
+    resp = client.post("/auth/ssf", data=token, content_type=SECEVENT)
+    assert resp.status_code == 400
+
+
+def test_missing_typ_rejected(client, rsa_material, fake_redis):
+    private_pem, _ = rsa_material
+    token = _build_set(private_pem, RISC_ACCOUNT_DISABLED, typ=None)
+    resp = client.post("/auth/ssf", data=token, content_type=SECEVENT)
+    assert resp.status_code == 400
+
+
+# ------------------------------------------------------------------ jti-replaycache (RFC 8417 §2.2)
+
+
+def test_replay_rejected(client, rsa_material, fake_redis):
+    private_pem, _ = rsa_material
+    token = _build_set(private_pem, RISC_ACCOUNT_DISABLED, sub="99")
+    resp1 = client.post("/auth/ssf", data=token, content_type=SECEVENT)
+    assert resp1.status_code == 202
+    resp2 = client.post("/auth/ssf", data=token, content_type=SECEVENT)
+    assert resp2.status_code == 400
+
+
+# ------------------------------------------------------------------ userinfo-cache-invalidatie
+
+
+def test_cache_invalidated_on_session_revoked(client, rsa_material, fake_redis):
+    import flask_rpr_oauth.core as core_module
+
+    core_module.clear_cache()
+    core_module._cache_set("tok", {"sub": "42", "token_type": "user"}, ttl=60, maxsize=1000)
+
+    private_pem, _ = rsa_material
+    token = _build_set(private_pem, CAEP_SESSION_REVOKED, sub="42")
+    resp = client.post("/auth/ssf", data=token, content_type=SECEVENT)
+    assert resp.status_code == 202
+
+    assert core_module._cache_get("tok") is None
+
+
+def test_cache_invalidated_on_account_disabled(client, rsa_material, fake_redis):
+    import flask_rpr_oauth.core as core_module
+
+    core_module.clear_cache()
+    core_module._cache_set("tok", {"sub": "99", "token_type": "user"}, ttl=60, maxsize=1000)
+
+    private_pem, _ = rsa_material
+    token = _build_set(private_pem, RISC_ACCOUNT_DISABLED, sub="99")
+    resp = client.post("/auth/ssf", data=token, content_type=SECEVENT)
+    assert resp.status_code == 202
+
+    assert core_module._cache_get("tok") is None
+
+
+def test_cache_not_invalidated_on_credential_change(client, rsa_material, fake_redis):
+    """credential-change beëindigt de sessie, maar invalideert bewust niet de token-cache."""
+    import flask_rpr_oauth.core as core_module
+
+    core_module.clear_cache()
+    core_module._cache_set("tok", {"sub": "99", "token_type": "user"}, ttl=60, maxsize=1000)
+
+    private_pem, _ = rsa_material
+    token = _build_set(private_pem, CAEP_CREDENTIAL_CHANGE, sub="99")
+    resp = client.post("/auth/ssf", data=token, content_type=SECEVENT)
+    assert resp.status_code == 202
+
+    assert core_module._cache_get("tok") is not None

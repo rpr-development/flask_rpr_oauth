@@ -43,17 +43,40 @@ class _FakeRedis:
     def get(self, key):
         return self.store.get(key)
 
+    def set(self, key, value, nx=False, ex=None):
+        """Minimale SET NX EX-emulatie, voor de jti-replaycache (net als dpop.py's redis-client)."""
+        if nx and key in self.store:
+            return False
+        self.store[key] = value
+        return True
+
+
+_UNSET = object()
+
 
 def _build_logout_token(
-    private_pem, *, iss=ISSUER, aud=CLIENT_ID, sub="99", event=True, nonce=None, kid=KID
+    private_pem,
+    *,
+    iss=ISSUER,
+    aud=CLIENT_ID,
+    sub="99",
+    event=True,
+    nonce=None,
+    kid=KID,
+    jti="abc",
+    typ=_UNSET,
 ):
     now = int(time.time())
-    payload = {"iss": iss, "sub": sub, "aud": aud, "iat": now, "exp": now + 120, "jti": "abc"}
+    payload = {"iss": iss, "sub": sub, "aud": aud, "iat": now, "exp": now + 120, "jti": jti}
     if event:
         payload["events"] = {BACKCHANNEL_LOGOUT_EVENT: {}}
     if nonce:
         payload["nonce"] = nonce
-    header = {"alg": "RS256", "kid": kid, "typ": "logout+jwt"}
+    header = {"alg": "RS256", "kid": kid}
+    if typ is _UNSET:
+        header["typ"] = "logout+jwt"
+    elif typ is not None:
+        header["typ"] = typ
     tok = jose_jwt.encode(header, payload, private_pem)
     return tok.decode() if isinstance(tok, bytes) else tok
 
@@ -203,3 +226,135 @@ def test_session_survives_without_marker(app, auth, client, fake_redis):
 
     resp = client.get("/protected")
     assert resp.status_code == 200
+
+
+# ------------------------------------------------------------------ typ-header (OIDC BCL §2.4)
+
+
+def test_wrong_typ_rejected(client, rsa_material, fake_redis):
+    private_pem, _ = rsa_material
+    token = _build_logout_token(private_pem, typ="secevent+jwt")
+    resp = client.post("/auth/backchannel-logout", data={"logout_token": token})
+    assert resp.status_code == 400
+
+
+def test_missing_typ_rejected(client, rsa_material, fake_redis):
+    private_pem, _ = rsa_material
+    token = _build_logout_token(private_pem, typ=None)
+    resp = client.post("/auth/backchannel-logout", data={"logout_token": token})
+    assert resp.status_code == 400
+
+
+# ------------------------------------------------------------------ jti-replaycache (RFC 8417 §2.2)
+
+
+def test_replay_rejected(client, rsa_material, fake_redis):
+    private_pem, _ = rsa_material
+    token = _build_logout_token(private_pem, sub="99")
+    resp1 = client.post("/auth/backchannel-logout", data={"logout_token": token})
+    assert resp1.status_code == 200
+    resp2 = client.post("/auth/backchannel-logout", data={"logout_token": token})
+    assert resp2.status_code == 400
+
+
+def test_replay_check_fail_open_without_redis(client, rsa_material):
+    """Zonder Redis (geen fake_redis-fixture) blijft de logout werken (fail-open)."""
+    private_pem, _ = rsa_material
+    token = _build_logout_token(private_pem, sub="99")
+    resp = client.post("/auth/backchannel-logout", data={"logout_token": token})
+    assert resp.status_code == 200
+
+
+# ------------------------------------------------------------------ JWKS-herlaad bij onbekende kid
+
+
+@pytest.fixture(autouse=True)
+def _reset_jwks_force_reload_state():
+    """De rate-limit-state is module-level (gedeeld tussen issuers/tests) — isoleren."""
+    import flask_rpr_oauth.auth as auth_module
+
+    auth_module._jwks_force_reload_at.clear()
+    yield
+    auth_module._jwks_force_reload_at.clear()
+
+
+def test_jwks_reload_on_unknown_kid(app, rsa_material, monkeypatch):
+    """Een SET met een kid die niet in de gecachete JWKS zit triggert één geforceerde herlaad."""
+    _priv, key_set = rsa_material
+    priv2 = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    private_pem2 = priv2.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    )
+    key2 = JsonWebKey.import_key(private_pem2, {"kty": "RSA"})
+    public_jwk2 = key2.as_dict(is_private=False)
+    new_kid = "rotated-kid"
+    public_jwk2.update({"kid": new_kid, "use": "sig", "alg": "RS256"})
+    new_key_set = JsonWebKey.import_key_set({"keys": [public_jwk2]})
+
+    instance = RPRAuth(app)
+    calls = {"count": 0}
+
+    def fake_get_as_jwks(force=False):
+        if force:
+            calls["count"] += 1
+            return new_key_set
+        return key_set  # de "oude", gecachete set (kent new_kid niet)
+
+    monkeypatch.setattr(instance, "_get_as_jwks", fake_get_as_jwks)
+    monkeypatch.setattr(instance.auth_server, "load_server_metadata", lambda: {"issuer": ISSUER})
+    monkeypatch.setattr(instance, "_logout_redis", lambda: _FakeRedis())
+
+    token = _build_logout_token(private_pem2, sub="99", kid=new_kid)
+    resp = app.test_client().post("/auth/backchannel-logout", data={"logout_token": token})
+
+    assert resp.status_code == 200
+    assert calls["count"] == 1
+
+
+def test_jwks_reload_rate_limited(app, rsa_material, monkeypatch):
+    """Een tweede onbekende kid binnen de rate-limit-periode triggert geen nieuwe herlaad."""
+    private_pem, key_set = rsa_material
+    instance = RPRAuth(app)
+    calls = {"count": 0}
+
+    def fake_get_as_jwks(force=False):
+        if force:
+            calls["count"] += 1
+        return key_set  # blijft de aangeboden kid's nooit kennen: elke poging is "onbekend"
+
+    monkeypatch.setattr(instance, "_get_as_jwks", fake_get_as_jwks)
+    monkeypatch.setattr(instance.auth_server, "load_server_metadata", lambda: {"issuer": ISSUER})
+    monkeypatch.setattr(instance, "_logout_redis", lambda: _FakeRedis())
+    client = app.test_client()
+
+    token1 = _build_logout_token(private_pem, sub="99", kid="unknown-kid-1", jti="jti-1")
+    resp1 = client.post("/auth/backchannel-logout", data={"logout_token": token1})
+    assert resp1.status_code == 400  # blijft ongeldig (verkeerde sleutel), maar wél 1 poging
+    assert calls["count"] == 1
+
+    token2 = _build_logout_token(private_pem, sub="99", kid="unknown-kid-2", jti="jti-2")
+    resp2 = client.post("/auth/backchannel-logout", data={"logout_token": token2})
+    assert resp2.status_code == 400
+    assert calls["count"] == 1  # rate-limited: geen tweede poging binnen 60s
+
+
+# ------------------------------------------------------------------ userinfo-cache-invalidatie
+
+
+def test_cache_invalidated_on_logout(client, rsa_material, fake_redis):
+    import flask_rpr_oauth.core as core_module
+
+    core_module.clear_cache()
+    core_module._cache_set(
+        "some-access-token", {"sub": "99", "token_type": "user"}, ttl=60, maxsize=1000
+    )
+    assert core_module._cache_get("some-access-token") is not None
+
+    private_pem, _ = rsa_material
+    token = _build_logout_token(private_pem, sub="99")
+    resp = client.post("/auth/backchannel-logout", data={"logout_token": token})
+    assert resp.status_code == 200
+
+    assert core_module._cache_get("some-access-token") is None

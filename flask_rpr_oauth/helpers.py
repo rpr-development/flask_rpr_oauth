@@ -23,6 +23,7 @@ from flask import current_app
 
 from .core import RPROAuthCore
 from .core import clear_cache as _clear_core_cache
+from .core import invalidate_by_sub as _invalidate_core_cache_by_sub
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +159,19 @@ def clear_userinfo_cache():
     """Clear the userinfo cache (for testing/development)."""
     _clear_core_cache()
     logger.info("Userinfo cache cleared")
+
+
+def invalidate_userinfo_cache_for_sub(sub) -> int:
+    """Verwijder alle userinfo/introspectie-cache-entries voor ``sub``.
+
+    Gebruikt door de BCL-/SSF-ontvangers (``auth.py``) na een logout/account-event, zodat
+    een nog niet verlopen Bearer-cache-entry de gewijzigde staat niet even verbergt. Zie
+    ``core.invalidate_by_sub`` voor de details.
+    """
+    count = _invalidate_core_cache_by_sub(sub)
+    if count:
+        logger.info("Userinfo cache geïnvalideerd voor sub (%d entries)", count)
+    return count
 
 
 __all__ = [

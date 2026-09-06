@@ -5,6 +5,7 @@ flask_rpr_oauth.auth
 Main OAuth authentication class.
 """
 
+import base64
 import json
 import logging
 import re
@@ -30,7 +31,6 @@ from authlib.integrations.flask_client import OAuth
 from authlib.integrations.base_client.errors import MismatchingStateError
 from .models import OAuthUser
 from .exceptions import OAuthError, TokenExpiredError
-from .helpers import get_userinfo_from_token
 
 try:
     from flask_wtf.csrf import csrf_exempt
@@ -89,12 +89,46 @@ _SSF_CALLBACK_KEYS = {
 # Alle event-types die /auth/ssf herkent (de rest wordt genegeerd).
 _SSF_KNOWN_EVENTS = set(_SSF_CALLBACK_KEYS) | {BACKCHANNEL_LOGOUT_EVENT}
 
+# SSF-events waarbij de userinfo/introspectie-cache voor de betrokken sub geïnvalideerd
+# wordt: de gebruiker kan direct andere permissions/groups/acr hebben, en een tot 60s
+# oude cache-entry (OAUTH_USERINFO_CACHE_TTL) zou dat verbergen. credential-change telt
+# hier bewust niet mee (geen sessie-/autorisatie-impact op zichzelf).
+_SSF_CACHE_INVALIDATE_EVENTS = {RISC_ACCOUNT_DISABLED, RISC_ACCOUNT_PURGED, CAEP_SESSION_REVOKED}
+
+# Verwachte JWT `typ`-header per SET-soort (RPR-API zet deze altijd; een ontbrekende of
+# verkeerde typ wijst op een verkeerd/vervalst token op het verkeerde endpoint).
+_BCL_JWT_TYP = "logout+jwt"
+_SSF_JWT_TYP = "secevent+jwt"
+
 # In-memory cache van de JWKS van de auth server (voor het valideren van logout tokens).
 # Value = (JsonWebKey set, expiry timestamp). Beschermd door een lock: onder gevent/threads
 # muteren meerdere requests hem tegelijk.
 _jwks_cache: dict = {}
 _jwks_lock = threading.Lock()
 _JWKS_CACHE_TTL = 3600  # seconden
+
+# Rate-limit voor de geforceerde JWKS-herlaad bij een onbekende kid (sleutelrotatie):
+# maximaal één geforceerde herlaad per issuer per interval, anders zou een aanvaller
+# met SET's op willekeurige kid's bij elke poging een JWKS-fetch kunnen triggeren.
+_jwks_force_reload_at: dict = {}
+_jwks_force_reload_lock = threading.Lock()
+_JWKS_FORCE_RELOAD_MIN_INTERVAL = 60  # seconden
+
+
+def _peek_jwt_kid(token):
+    """Lees de ``kid`` uit de JWT-header, zonder verificatie.
+
+    Alleen gebruikt om te beslissen of een JWKS-herlaad nodig is (sleutelrotatie) —
+    de handtekening wordt hierna via ``jose_jwt.decode`` alsnog volledig geverifieerd,
+    dus een ongeldige/vervalste header hier heeft geen beveiligingsimpact.
+    """
+    try:
+        header_b64 = token.split(".", 1)[0]
+        padding = "=" * (-len(header_b64) % 4)
+        header = json.loads(base64.urlsafe_b64decode(header_b64 + padding))
+        return header.get("kid")
+    except Exception:
+        return None
 
 
 def _is_safe_redirect(target):
@@ -755,16 +789,21 @@ class RPRAuth:
             self._bcl_redis = current_app.config.get("SESSION_REDIS")
         return self._bcl_redis
 
-    def _get_as_jwks(self):
-        """Haal (en cache) de JWKS van de auth server op als authlib-key-set."""
+    def _get_as_jwks(self, force=False):
+        """Haal (en cache) de JWKS van de auth server op als authlib-key-set.
+
+        ``force=True`` negeert de cache-TTL en haalt altijd een verse JWKS op (gebruikt
+        door ``_reload_jwks_for_unknown_kid`` bij sleutelrotatie; zelf rate-limited daar).
+        """
         from authlib.jose import JsonWebKey
 
         base = current_app.config["OAUTH_BASE_URL"]
         now = time.time()
-        with _jwks_lock:
-            entry = _jwks_cache.get(base)
-            if entry and entry[1] > now:
-                return entry[0]
+        if not force:
+            with _jwks_lock:
+                entry = _jwks_cache.get(base)
+                if entry and entry[1] > now:
+                    return entry[0]
 
         # Buiten de lock ophalen (netwerk).
         try:
@@ -781,19 +820,96 @@ class RPRAuth:
             _jwks_cache[base] = (key_set, now + _JWKS_CACHE_TTL)
         return key_set
 
-    def _validate_set(self, token, expected_aud):
+    def _jwks_has_kid(self, key_set, kid):
+        """True als ``key_set`` een sleutel met deze ``kid`` bevat (of geen kid nodig heeft)."""
+        try:
+            key_set.find_by_kid(kid)
+            return True
+        except ValueError:
+            return False
+        except Exception:
+            # Onverwachte fout in authlib: wees niet te agressief met herladen.
+            return True
+
+    def _reload_jwks_for_unknown_kid(self):
+        """Forceer één JWKS-herlaad na een onbekende ``kid`` (sleutelrotatie op de auth
+        server), rate-limited op max. 1x per ``_JWKS_FORCE_RELOAD_MIN_INTERVAL`` per
+        issuer — anders zou een SET met een willekeurige kid bij elke afwijzing een
+        JWKS-fetch kunnen triggeren. Retourneert de ververste key-set, of None als de
+        herlaad rate-limited of mislukt is.
+        """
+        base = current_app.config["OAUTH_BASE_URL"]
+        now = time.time()
+        with _jwks_force_reload_lock:
+            last = _jwks_force_reload_at.get(base, 0)
+            if now - last < _JWKS_FORCE_RELOAD_MIN_INTERVAL:
+                return None
+            _jwks_force_reload_at[base] = now
+
+        try:
+            key_set = self._get_as_jwks(force=True)
+            logger.info("SET: JWKS geforceerd herladen na onbekende kid")
+            return key_set
+        except Exception as e:
+            logger.warning("SET: geforceerde JWKS-herlaad mislukt: %s", e)
+            return None
+
+    def _consume_set_jti(self, jti, exp, iat):
+        """Markeer een SET-``jti`` als gebruikt (RFC 8417 replay-preventie).
+
+        Redis ``SET NX EX``, gedeeld tussen BCL logout tokens en SSF-events (beide via
+        ``_validate_set``) — zelfde idioom als de DPoP-jti-cache in ``dpop.py``.
+        Fail-open zonder Redis (met warning), consistent met de rest van het pakket.
+        """
+        redis_client = self._logout_redis()
+        if redis_client is None:
+            logger.warning(
+                "SET-jti-replaycache: geen Redis geconfigureerd (OAUTH_LOGOUT_REDIS_URL/"
+                "SESSION_REDIS) — fail-open, replay-bescherming staat uit"
+            )
+            return True
+        try:
+            now = int(time.time())
+            if isinstance(exp, (int, float)):
+                ttl = max(int(exp) - now, 1) + 5
+            elif isinstance(iat, (int, float)):
+                ttl = max(int(iat) + 300 - now, 1) + 5
+            else:
+                ttl = 3600
+            key = f"rpr:set:jti:{jti}"
+            if not redis_client.set(key, "1", nx=True, ex=ttl):
+                logger.warning("SET: replay gedetecteerd (jti=%s)", jti)
+                return False
+            return True
+        except Exception as e:
+            logger.warning("SET-jti-replaycontrole faalde (%s) — toegestaan", e)
+            return True
+
+    def _validate_set(self, token, expected_aud, expected_typ):
         """Valideer een Security Event Token (RFC 8417); geef de claims-dict terug of None.
 
         Gedeelde validatie voor OIDC Back-Channel Logout logout tokens én SSF-events (CAEP/
-        RISC): geldige RS256-handtekening (auth-server-JWKS), ``iss`` = de auth server, ``aud``
-        bevat ``expected_aud``, en GÉÉN ``nonce`` (verboden in een SET). Controleert NIET welk
-        event erin zit — dat doet de aanroeper, afhankelijk van het endpoint.
+        RISC): geldige RS256-handtekening (auth-server-JWKS, met één geforceerde herlaad bij
+        een onbekende kid — sleutelrotatie), ``typ``-header (``expected_typ``), ``iss`` = de
+        auth server, ``aud`` bevat ``expected_aud``, GÉÉN ``nonce`` (verboden in een SET), en
+        een unieke ``jti`` (replay-preventie). Controleert NIET welk event erin zit — dat doet
+        de aanroeper, afhankelijk van het endpoint.
         """
         from authlib.jose import jwt as jose_jwt
         from authlib.jose.errors import JoseError
 
         try:
             key_set = self._get_as_jwks()
+        except Exception as e:
+            logger.warning("SET kon niet gevalideerd worden (JWKS niet beschikbaar): %s", e)
+            return None
+
+        if not self._jwks_has_kid(key_set, _peek_jwt_kid(token)):
+            refreshed = self._reload_jwks_for_unknown_kid()
+            if refreshed is not None:
+                key_set = refreshed
+
+        try:
             claims = jose_jwt.decode(token, key_set)
             claims.validate()  # exp/iat/nbf indien aanwezig
         except JoseError as e:
@@ -801,6 +917,13 @@ class RPRAuth:
             return None
         except Exception as e:
             logger.warning("SET kon niet gevalideerd worden: %s", e)
+            return None
+
+        # typ-header moet overeenkomen met het endpoint (RPR-API zet 'm altijd).
+        if claims.header.get("typ") != expected_typ:
+            logger.warning(
+                "SET: typ-header %r != verwacht %r", claims.header.get("typ"), expected_typ
+            )
             return None
 
         # iss moet de auth server zijn.
@@ -826,6 +949,14 @@ class RPRAuth:
         # nonce is verboden in een SET (o.a. OIDC BCL §2.4).
         if "nonce" in claims:
             logger.warning("SET bevat een nonce (verboden)")
+            return None
+
+        # jti is verplicht (RFC 8417 §2.2) en beschermt tegen replay.
+        jti = claims.get("jti")
+        if not jti or not isinstance(jti, str):
+            logger.warning("SET mist een jti")
+            return None
+        if not self._consume_set_jti(jti, claims.get("exp"), claims.get("iat")):
             return None
 
         return dict(claims)
@@ -873,7 +1004,7 @@ class RPRAuth:
         controleert daarna het backchannel-logout-event + ``sub`` (§2.6). ``aud`` = dit client_id.
         """
         client_id = current_app.config.get("OAUTH_CLIENT_ID")
-        claims = self._validate_set(logout_token, expected_aud=client_id)
+        claims = self._validate_set(logout_token, expected_aud=client_id, expected_typ=_BCL_JWT_TYP)
         if claims is None:
             return None
 
@@ -926,6 +1057,18 @@ class RPRAuth:
         # Alleen beëindigen als de logout ná het login-moment van deze sessie kwam.
         return marked_at >= (session.get("_login_at", 0) or 0)
 
+    def _invalidate_userinfo_cache_for_sub(self, sub):
+        """Verwijder alle userinfo/introspectie-cache-entries voor ``sub``.
+
+        Zonder dit zou een nog niet verlopen Bearer-cache-entry (max
+        ``OAUTH_USERINFO_CACHE_TTL`` seconden) de gebruiker nog even met de OUDE
+        permissions/groups/acr laten doorgaan na een BCL-logout of een SSF-event dat
+        de account-/sessiestatus wijzigt.
+        """
+        from .helpers import invalidate_userinfo_cache_for_sub
+
+        invalidate_userinfo_cache_for_sub(sub)
+
     @csrf_exempt
     def _handle_backchannel_logout(self):
         """OIDC Back-Channel Logout 1.0 §2.5 endpoint: verwerk een logout token."""
@@ -942,6 +1085,7 @@ class RPRAuth:
 
         # Markeer de gebruiker als uitgelogd → al zijn sessies sterven bij hun volgende request.
         marked = self._mark_logged_out(sub)
+        self._invalidate_userinfo_cache_for_sub(sub)
 
         # Is het huidige request diezelfde gebruiker, wis dan meteen die sessie (best-effort).
         try:
@@ -1011,7 +1155,7 @@ class RPRAuth:
         expected_aud = current_app.config.get("OAUTH_SSF_AUDIENCE") or current_app.config.get(
             "OAUTH_CLIENT_ID"
         )
-        claims = self._validate_set(token, expected_aud=expected_aud)
+        claims = self._validate_set(token, expected_aud=expected_aud, expected_typ=_SSF_JWT_TYP)
         if claims is None:
             return self._ssf_error("invalid SET")
 
@@ -1054,6 +1198,12 @@ class RPRAuth:
                 # Best-effort: de logout-markering staat al; dit mag de 202 nooit blokkeren.
                 logger.debug("SSF: kon huidige sessie niet direct wissen: %s", e, exc_info=True)
 
+            # account-disabled/-purged en session-revoked kunnen de permissions/groups/acr
+            # van de sub direct veranderen — een tot OAUTH_USERINFO_CACHE_TTL-oude Bearer-
+            # cache-entry mag dat niet nog even verbergen.
+            if _SSF_CACHE_INVALIDATE_EVENTS.intersection(handled):
+                self._invalidate_userinfo_cache_for_sub(sub)
+
         logger.info("SSF-event verwerkt voor sub=%s events=%s", sub, handled)
         resp = jsonify({"status": "ok"})
         resp.headers["Cache-Control"] = "no-store"
@@ -1093,20 +1243,31 @@ class RPRAuth:
     def _scim_guard(self):
         """Toegangscontrole voor de SCIM-routes.
 
-        Vereist een Bearer M2M-token dat via userinfo/introspectie valideert (inclusief de
-        RFC 8707 audience-check uit ``get_userinfo_from_token``) én de provisioning-permissie
-        draagt (``OAUTH_SCIM_PERMISSION``, default ``auth.scim.provision`` — de permissie van
-        de scim-worker op de auth server). Returnt None als het request door mag, anders een
-        foutrespons.
+        Vereist een Bearer- of DPoP-token dat via userinfo/introspectie valideert
+        (inclusief de RFC 8707 audience-check) én de provisioning-permissie draagt
+        (``OAUTH_SCIM_PERMISSION``, default ``auth.scim.provision`` — de permissie van
+        de scim-worker op de auth server). Returnt None als het request door mag, anders
+        een foutrespons.
+
+        Loopt via ``decorators._get_userinfo_from_token`` (hetzelfde DPoP-bewuste pad als
+        de andere decorators) i.p.v. rechtstreeks ``get_userinfo_from_token``, zodat
+        ``OAUTH_REQUIRE_DPOP`` ook ``/scim/v2/*`` beschermt (een plain Bearer-token wordt
+        dan geweigerd, net als bij de Flask-decorators).
         """
         if not current_app.config.get("OAUTH_ENABLE_SCIM", False):
             abort(404)
-        auth_header = request.headers.get("Authorization", "")
-        if not auth_header.startswith("Bearer "):
+
+        from .decorators import (
+            _get_bearer_token,
+            _get_userinfo_from_token,
+            _is_bearer_token_request,
+        )
+
+        if not _is_bearer_token_request():
             resp, status = self._scim_error(401, "Bearer-token vereist")
             resp.headers["WWW-Authenticate"] = 'Bearer error="invalid_token"'
             return resp, status
-        info = get_userinfo_from_token(auth_header[7:].strip())
+        info = _get_userinfo_from_token(_get_bearer_token())
         if info is None:
             resp, status = self._scim_error(
                 401, "token ongeldig of voor een andere resource server"

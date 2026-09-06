@@ -80,6 +80,25 @@ def clear_cache() -> None:
         _cache.clear()
 
 
+def invalidate_by_sub(sub) -> int:
+    """Verwijder alle cache-entries voor ``sub`` (elke entry al bevat ``sub`` als claim,
+    dus geen aparte index nodig — een lineaire scan van de begrensde cache volstaat).
+
+    Gebruikt door BCL-logout en bepaalde SSF-events (account-disabled/-purged,
+    session-revoked): de gebruiker kan direct andere permissions/groups/acr hebben, en
+    een nog niet verlopen cache-entry zou dat anders tot ``cache_ttl`` seconden verbergen.
+
+    Returns:
+        int: aantal verwijderde entries.
+    """
+    sub = str(sub)
+    with _cache_lock:
+        keys = [k for k, (data, _) in _cache.items() if str(data.get("sub")) == sub]
+        for k in keys:
+            _cache.pop(k, None)
+    return len(keys)
+
+
 class RPROAuthCore:
     """Resource-server-side OAuth 2.0 token verification, zonder framework-koppeling.
 
@@ -332,4 +351,4 @@ class RPROAuthCore:
         return data
 
 
-__all__ = ["RPROAuthCore", "clear_cache"]
+__all__ = ["RPROAuthCore", "clear_cache", "invalidate_by_sub"]

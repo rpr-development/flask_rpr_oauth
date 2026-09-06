@@ -10,6 +10,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** legacy `/auth/webhook/*` receivers removed (zie Removed).
 
 ### Added
+- **BCL/SSF-ontvanger-hardening**: de gedeelde SET-validatie (`_validate_set`)
+  controleert nu ook de JWT `typ`-header (`logout+jwt` voor back-channel-logout,
+  `secevent+jwt` voor SSF — verkeerd/ontbrekend wordt geweigerd), en eist een unieke
+  `jti` met een Redis-gebaseerde replaycache (`SET NX EX`, zelfde idioom als de
+  DPoP-jti-cache; fail-open zonder Redis met een warning). Een onbekende `kid` (bijv.
+  door sleutelrotatie op de auth server) triggert één geforceerde JWKS-herlaad,
+  rate-limited op max. 1x per 60s per issuer, vóórdat het token wordt afgewezen. Een
+  back-channel-logout en de SSF-events `account-disabled`/`account-purged`/
+  `session-revoked` invalideren nu ook meteen de userinfo/introspectie-cache voor de
+  betrokken gebruiker (`core.invalidate_by_sub`) — een nog niet verlopen Bearer-cache-
+  entry kon anders tot `OAUTH_USERINFO_CACHE_TTL` seconden de oude permissies/groepen
+  laten doorwerken. `/scim/v2/*` loopt nu via hetzelfde DPoP-bewuste pad als de
+  decorators, zodat `OAUTH_REQUIRE_DPOP` ook SCIM beschermt.
 - **Framework-agnostische core (`core.py`) + MCP `TokenVerifier`-adapter (`mcp.py`)**:
   de userinfo/introspectie-cache, het RFC 8707 audience-onderzoek en de RFC 9449
   DPoP-validatie zijn verplaatst naar een nieuwe, Flask-vrije klasse `RPROAuthCore`
