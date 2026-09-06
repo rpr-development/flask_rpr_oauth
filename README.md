@@ -186,8 +186,8 @@ app.config['OAUTH_PARTITIONED_COOKIES'] = True
 #
 # Het access token wordt aangeleverd via (in volgorde van voorkeur):
 #   - POST form-veld `access_token` (voorkeur)
-#   - query-parameter `access_token` (GET)
 #   - `Authorization: Bearer <token>` header
+#   - query-parameter `access_token` (afgeraden — token lekt naar logs/Referer/history)
 # Het is een ACCESS TOKEN (bearer), GEEN code: er wordt niets ingewisseld bij
 # /oauth/token en er is geen client secret nodig. Het token wordt gevalideerd
 # door /oauth/userinfo aan te roepen; bij falen volgt een redirect naar login.

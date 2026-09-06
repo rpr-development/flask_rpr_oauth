@@ -7,7 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Breaking:** legacy `/auth/webhook/*` receivers removed (zie Removed).
+
 ### Added
+- **RFC 9728 Protected Resource Metadata** op `/.well-known/oauth-protected-resource`:
+  publiek discovery-document (`resource`, `authorization_servers`, `scopes_supported`,
+  `bearer_methods_supported`) waarmee een OAuth-/MCP-client bij een `401` (via de
+  `WWW-Authenticate: Bearer resource_metadata="..."`-header) ontdekt welke authorization
+  server en scopes bij deze resource server horen. Config: `OAUTH_RESOURCE_ID` (resource-URI,
+  default de request-host) en `OAUTH_RESOURCE_SCOPES_SUPPORTED` (default afgeleid uit
+  `OAUTH_SCOPE`).
+- **RFC 9449 DPoP (resource-server-validatie)**, opt-in per app via `OAUTH_REQUIRE_DPOP`
+  (nieuwe module `dpop.py`): valideert de `DPoP:`-proof-header lokaal (`htm`/`htu`/`ath`/`jti`,
+  optionele Redis-jti-replaycache met fail-open-gedrag) en vergelijkt de thumbprint (`jkt`)
+  met de `cnf.jkt` uit de introspectie-respons van de auth server. Staat `OAUTH_REQUIRE_DPOP`
+  aan, dan weigert de resource server kale `Authorization: Bearer`-tokens en verwacht het
+  `DPoP`-scheme; de `WWW-Authenticate`-header van de decorators meldt dan `DPoP` i.p.v.
+  `Bearer`.
 - **`POST /auth/logout`** naast de bestaande `GET`-variant (zelfde handler). Sinds de
   RFC 7009-revocatie heeft een cross-site-triggerbare `GET /auth/logout` (bijv. via
   `<img src>`) een écht server-side effect (refresh-token wordt ingetrokken); een
