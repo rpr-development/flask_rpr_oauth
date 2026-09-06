@@ -34,6 +34,14 @@ def app():
             return {"message": "success", "user": current_token.get("sub", "api-user")}
         return {"message": "success", "user": current_user.email}
 
+    # RFC 9470 max_age: recente authenticatie vereist, niet alleen acr.
+    @app.route("/max-age")
+    @require_2fa(max_age=300)
+    def max_age_route():
+        if current_token:
+            return {"message": "success", "user": current_token.get("sub", "api-user")}
+        return {"message": "success", "user": current_user.email}
+
     @app.route("/test-session")
     def test_session():
         """Helper endpoint om session te testen."""
@@ -335,6 +343,183 @@ def test_callback_saves_2fa_status(app, client):
 
     with client.session_transaction() as sess:
         assert sess.get("twofa_validated") is True
+
+
+def test_callback_saves_auth_time(app, client):
+    """_populate_session slaat auth_time (RFC 9470 max_age-check) op uit de userinfo-claims."""
+    rpr_auth = app.extensions["rpr_auth"]
+    rpr_auth.auth_server = Mock(
+        authorize_access_token=Mock(
+            return_value={
+                "access_token": "test-token",
+                "refresh_token": "test-refresh",
+                "token_type": "bearer",
+            }
+        ),
+        userinfo=Mock(
+            return_value={
+                "sub": "test-123",
+                "email": "test@example.com",
+                "acr": "mfa",
+                "auth_time": 1700000000,
+            }
+        ),
+    )
+
+    client.get("/auth/callback")
+
+    with client.session_transaction() as sess:
+        assert sess.get("auth_time") == 1700000000
+
+
+def test_callback_saves_auth_time_missing_as_none(app, client):
+    """M2M-achtige of oude auth-server-responses zonder auth_time -> None, niet ontbrekend."""
+    rpr_auth = app.extensions["rpr_auth"]
+    rpr_auth.auth_server = Mock(
+        authorize_access_token=Mock(
+            return_value={
+                "access_token": "test-token",
+                "refresh_token": "test-refresh",
+                "token_type": "bearer",
+            }
+        ),
+        userinfo=Mock(return_value={"sub": "test-123", "email": "test@example.com"}),
+    )
+
+    client.get("/auth/callback")
+
+    with client.session_transaction() as sess:
+        assert sess.get("auth_time") is None
+
+
+# ------------------------------------------------------------------ RFC 9470 max_age (stap 14)
+
+
+@patch("flask_rpr_oauth.helpers.get_userinfo_from_token")
+def test_require_2fa_max_age_bearer_fresh_allowed(mock_userinfo, client):
+    """Bearer user-token met acr=mfa en verse auth_time voldoet aan max_age=300."""
+    mock_userinfo.return_value = {
+        "sub": "42",
+        "token_type": "user",
+        "acr": "mfa",
+        "auth_time": time.time() - 10,
+        "permissions": [],
+    }
+    response = client.get("/max-age", headers={"Authorization": "Bearer some-token"})
+    assert response.status_code == 200
+
+
+@patch("flask_rpr_oauth.helpers.get_userinfo_from_token")
+def test_require_2fa_max_age_bearer_stale_blocked(mock_userinfo, client):
+    """auth_time ouder dan max_age -> 401 reauthentication_required, met max_age in header."""
+    mock_userinfo.return_value = {
+        "sub": "42",
+        "token_type": "user",
+        "acr": "mfa",
+        "auth_time": time.time() - 1000,  # > max_age=300
+        "permissions": [],
+    }
+    response = client.get("/max-age", headers={"Authorization": "Bearer some-token"})
+    assert response.status_code == 401
+    body = response.get_json()
+    assert body["error"] == "reauthentication_required"
+    challenge = response.headers["WWW-Authenticate"]
+    assert 'error="insufficient_user_authentication"' in challenge
+    assert 'max_age="300"' in challenge
+    assert "acr_values=" not in challenge  # acr was zelf voldoende
+
+
+@patch("flask_rpr_oauth.helpers.get_userinfo_from_token")
+def test_require_2fa_max_age_bearer_missing_auth_time_blocked(mock_userinfo, client):
+    """Geen auth_time-claim (M2M-stijl respons of oude auth-server) telt als te oud."""
+    mock_userinfo.return_value = {
+        "sub": "42",
+        "token_type": "user",
+        "acr": "mfa",
+        "permissions": [],
+    }
+    response = client.get("/max-age", headers={"Authorization": "Bearer some-token"})
+    assert response.status_code == 401
+    assert response.get_json()["error"] == "reauthentication_required"
+
+
+@patch("flask_rpr_oauth.helpers.get_userinfo_from_token")
+def test_require_2fa_max_age_bearer_acr_and_auth_time_both_fail(mock_userinfo, client):
+    """Onvoldoende acr én te oude auth_time -> reauthentication_required, met beide attributen
+    (het volledig opnieuw inloggen dat max_age afdwingt lost ook de acr-eis op)."""
+    mock_userinfo.return_value = {
+        "sub": "42",
+        "token_type": "user",
+        "acr": "pwd",
+        "permissions": [],
+    }
+    response = client.get("/max-age", headers={"Authorization": "Bearer some-token"})
+    assert response.status_code == 401
+    assert response.get_json()["error"] == "reauthentication_required"
+    challenge = response.headers["WWW-Authenticate"]
+    assert 'acr_values="mfa"' in challenge
+    assert 'max_age="300"' in challenge
+
+
+@patch("flask_rpr_oauth.helpers.get_userinfo_from_token")
+def test_require_2fa_max_age_bearer_m2m_still_403(mock_userinfo, client):
+    """M2M blijft 403 ongeacht max_age — geen auth_time-concept voor M2M."""
+    mock_userinfo.return_value = {"sub": "worker", "token_type": "m2m"}
+    response = client.get("/max-age", headers={"Authorization": "Bearer some-token"})
+    assert response.status_code == 403
+
+
+def test_require_2fa_max_age_session_fresh_allowed(client):
+    """Sessie met verse auth_time voldoet, geen reauth nodig."""
+    with client.session_transaction() as sess:
+        sess["oauth_token"] = {"access_token": "test-token", "token_type": "bearer"}
+        sess["oauth_user"] = {"oauth_id": "test-123", "email": "test@example.com"}
+        sess["twofa_validated"] = True
+        sess["auth_time"] = time.time() - 10
+        sess["_login_at"] = time.time()
+        sess["_token_validated_at"] = time.time()
+
+    response = client.get("/max-age")
+    assert response.status_code == 200
+
+
+def test_require_2fa_max_age_session_stale_restarts_with_max_age(client):
+    """Sessie met verlopen auth_time herstart de OIDC-flow mét max_age (niet enkel acr_values)."""
+    with client.session_transaction() as sess:
+        sess["oauth_token"] = {"access_token": "test-token", "token_type": "bearer"}
+        sess["oauth_user"] = {"oauth_id": "test-123", "email": "test@example.com"}
+        sess["twofa_validated"] = True
+        sess["auth_time"] = time.time() - 1000
+        sess["_login_at"] = time.time()
+        sess["_token_validated_at"] = time.time()
+
+    with patch("flask_rpr_oauth.auth.RPRAuth.require_2fa_reauth") as mock_reauth:
+        from flask import redirect
+
+        mock_reauth.return_value = redirect("https://auth.test.nl/oauth/authorize?max_age=300")
+        response = client.get("/max-age", follow_redirects=False)
+
+    assert response.status_code == 302
+    mock_reauth.assert_called_once_with(max_age=300)
+
+
+def test_require_2fa_max_age_session_missing_auth_time_restarts(client):
+    """Sessie zonder auth_time (bijv. vóór deze feature ingelogd) telt als te oud."""
+    with client.session_transaction() as sess:
+        sess["oauth_token"] = {"access_token": "test-token", "token_type": "bearer"}
+        sess["oauth_user"] = {"oauth_id": "test-123", "email": "test@example.com"}
+        sess["twofa_validated"] = True
+        sess["_login_at"] = time.time()
+        sess["_token_validated_at"] = time.time()
+
+    with patch("flask_rpr_oauth.auth.RPRAuth.require_2fa_reauth") as mock_reauth:
+        from flask import redirect
+
+        mock_reauth.return_value = redirect("https://auth.test.nl/oauth/authorize?max_age=300")
+        response = client.get("/max-age", follow_redirects=False)
+
+    assert response.status_code == 302
+    mock_reauth.assert_called_once_with(max_age=300)
 
 
 def test_callback_saves_2fa_status_false(app, client):

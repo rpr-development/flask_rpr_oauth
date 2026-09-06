@@ -495,6 +495,10 @@ class RPRAuth:
 
         session["twofa_validated"] = twofa_validated
         session["acr"] = acr
+        # RFC 9470 §4 max_age-check (require_2fa(max_age=...)): wanneer de gebruiker voor
+        # het laatst daadwerkelijk geauthenticeerd is. None (auth_time ontbreekt op de auth
+        # server, bijv. M2M of een sessie van vóór deze claim) telt als "te oud" bij de check.
+        session["auth_time"] = userinfo.get("auth_time")
         session["_token_validated_at"] = time.time()
         # Stabiel login-moment (NIET herzet bij hervalidatie): de back-channel-logout-markering
         # vergelijkt hiertegen — een logout-event ná dit moment beëindigt de sessie.
@@ -1793,6 +1797,10 @@ class RPRAuth:
                 logger.info(
                     f"validate_2fa: userinfo acr={acr!r}, twofa_validated={data.get('twofa_validated')}"
                 )
+                # auth_time meenemen ongeacht de acr-uitkomst hieronder: de RFC 9470
+                # max_age-check in require_2fa() moet ook na een pure acr-hercheck kloppen.
+                session["auth_time"] = data.get("auth_time")
+
                 if acr in ["mfa", "phr"]:
                     session["acr"] = acr
                     session["twofa_validated"] = True
@@ -1816,22 +1824,26 @@ class RPRAuth:
             logger.error(f"2FA validation error: {e}")
             return False
 
-    def _embedded_auth_signal(self, reason: str, acr_values=None, force_fresh: bool = False):
+    def _embedded_auth_signal(
+        self, reason: str, acr_values=None, force_fresh: bool = False, max_age: int = None
+    ):
         """§6 laag-2: signaleer de host-NUI (FiveM-iframe) dat (her)authenticatie nodig is.
 
         Voor een embedded sessie (`session['rpr_embedded']`) mag step-up/herauth NIET via een
         in-CEF redirect naar de auth-server (geen sessie daar, passkeys werken niet in CEF).
         In plaats daarvan rendert deze methode een minimale pagina die via `postMessage` de
-        host-NUI vraagt de device-flow (eventueel met `acr_values`) opnieuw te draaien in de
-        ECHTE browser en daarna het iframe te herbootstrappen.
+        host-NUI vraagt de device-flow (eventueel met `acr_values`/`max_age`) opnieuw te
+        draaien in de ECHTE browser en daarna het iframe te herbootstrappen.
 
         reason: 'step_up' (2FA-eis) of 'reauth' (sessie/token verlopen).
+        max_age: RFC 9470 §4 max_age (seconden) — alleen relevant bij 'step_up'.
         """
         payload = {
             "type": "rpr_auth_required",
             "reason": reason,
             "acr_values": acr_values,
             "fresh": bool(force_fresh),
+            "max_age": max_age,
         }
         html = render_template_string(_EMBEDDED_AUTH_SIGNAL_HTML, payload_json=json.dumps(payload))
         resp = make_response(html, 200)
@@ -1842,7 +1854,7 @@ class RPRAuth:
         resp.headers["Content-Security-Policy"] = "frame-ancestors * nui:"
         return resp
 
-    def require_2fa_reauth(self, force_fresh: bool = False):
+    def require_2fa_reauth(self, force_fresh: bool = False, max_age: int = None):
         """
         Start OIDC step-up authentication: requires the user to have completed 2FA.
 
@@ -1857,13 +1869,19 @@ class RPRAuth:
                          2fa_verified status and always demands fresh 2FA. Use only
                          for sensitive actions (via require_fresh_2fa), not for
                          regular @require_2fa routes.
+            max_age: RFC 9470 §4 / OIDC max_age (seconds). Forwarded as the `max_age`
+                     authorize-parameter so the auth server forces a fresh login when
+                     the user's last authentication is older than this (used by
+                     `require_2fa(max_age=...)`).
 
         Returns:
             Flask redirect response to the OAuth authorize endpoint
         """
         # §6 laag-2: in een FiveM NUI-iframe nooit in-CEF redirecten — signaleer de host-NUI.
         if session.get("rpr_embedded"):
-            return self._embedded_auth_signal("step_up", acr_values="mfa", force_fresh=force_fresh)
+            return self._embedded_auth_signal(
+                "step_up", acr_values="mfa", force_fresh=force_fresh, max_age=max_age
+            )
 
         redirect_uri = current_app.config["OAUTH_REDIRECT_URI"]
 
@@ -1872,12 +1890,15 @@ class RPRAuth:
             # prompt=login wist 2fa_verified op de auth server zodat de gebruiker
             # altijd opnieuw 2FA doorloopt, ongeacht een bestaande sessie.
             kwargs["prompt"] = "login"
+        if max_age is not None:
+            kwargs["max_age"] = max_age
 
         response = self.auth_server.authorize_redirect(redirect_uri, **kwargs)
         session.modified = True
         state_keys = [k for k in session.keys() if k.startswith("_state_")]
         logger.info(
-            f"[require_2fa_reauth] force_fresh={force_fresh} state_keys_in_session={state_keys}"
+            f"[require_2fa_reauth] force_fresh={force_fresh} max_age={max_age} "
+            f"state_keys_in_session={state_keys}"
         )
         return response
 

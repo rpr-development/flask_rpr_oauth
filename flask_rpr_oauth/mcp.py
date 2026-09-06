@@ -118,9 +118,9 @@ class RPRTokenVerifier(TokenVerifier):
         scope = data.get("scope") or ""
         return AccessToken(
             token=token,
-            # RPR-API's userinfo/introspection responses don't always carry a
-            # dedicated `client_id` claim; `sub` is the best available fallback
-            # (for M2M tokens `sub` already *is* the client's own identity).
+            # /oauth/introspect returns `client_id`; /oauth/userinfo (only reached for
+            # user tokens) does not, so `sub` is the fallback there — for M2M tokens
+            # `sub` already *is* the client's own identity anyway.
             client_id=str(data.get("client_id") or data.get("sub") or ""),
             scopes=scope.split(),
             expires_at=data.get("exp"),
@@ -130,6 +130,7 @@ class RPRTokenVerifier(TokenVerifier):
                 "permissions": data.get("permissions"),
                 "groups": data.get("groups"),
                 "acr": data.get("acr"),
+                "auth_time": data.get("auth_time"),
                 "twofa_validated": data.get("twofa_validated"),
                 "token_type": data.get("token_type"),
             },

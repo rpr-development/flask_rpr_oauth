@@ -431,6 +431,28 @@ De `@require_2fa` decorator:
 - Auth server toont alleen het 2FA-scherm, geen wachtwoord opnieuw vragen
 - Redirect terug naar originele URL na 2FA voltooiing
 
+#### RFC 9470 §4 `max_age` — recente authenticatie afdwingen
+
+`@require_2fa` accepteert een optionele `max_age` (seconden), naast bare gebruik:
+
+```python
+@app.route('/admin/danger-zone')
+@require_2fa(max_age=300)          # login mag hooguit 5 minuten oud zijn
+def danger_zone():
+    return "Requires a recent login"
+```
+
+- Toetst `auth_time` (userinfo/introspectie, resp. de sessie) tegen `max_age`: ontbreekt
+  `auth_time` of is die ouder dan `max_age` seconden geleden, dan wordt (her)authenticatie
+  afgedwongen — óók als `acr` zelf al voldoet (bv. een oude 2FA-login).
+- **Bearer**: `401` met `WWW-Authenticate: Bearer error="insufficient_user_authentication",
+  max_age="<seconden>"` (plus `acr_values="mfa"` als die eis ook faalt). JSON-body:
+  `{"error": "reauthentication_required", ...}` als alleen `auth_time` het probleem is,
+  anders de bestaande `mfa_required`-body — routes zonder `max_age` zien dus geen verschil.
+- **Sessie**: herstart de OIDC-flow met `max_age=<seconden>` in de authorize-redirect (i.p.v.
+  alleen `acr_values=mfa`), zodat de auth server een bestaande SSO-sessie niet zomaar accepteert.
+- M2M-tokens blijven `403` (geen `auth_time`-concept).
+
 ### @require_scope
 
 ```python
@@ -513,7 +535,10 @@ registreren voor een pure MCP-server.
 `RPRTokenVerifier.verify_token()` draait de synchrone core via `asyncio.to_thread`
 (blokkeert de event loop niet) en mapt het resultaat naar de SDK's `AccessToken`
 (`scopes`, `expires_at`, `resource`, `subject`, en de RPR-specifieke velden
-`permissions`/`groups`/`acr`/`twofa_validated`/`token_type` onder `claims`).
+`permissions`/`groups`/`acr`/`auth_time`/`twofa_validated`/`token_type` onder `claims`).
+`auth_time` (RFC 9470 §4) staat een MCP-server toe zelf een `max_age`-eis te toetsen op
+het moment van de laatste gebruikersauthenticatie; `None` voor M2M-tokens en tokens van
+een auth server die deze claim (nog) niet uitgeeft.
 
 ## Two-Factor Authentication (2FA)
 
@@ -906,6 +931,7 @@ De package gebruikt pure Flask sessions voor authenticatie, zonder Flask-Login d
 | `@group_required('group')` | Vereist specifieke groep | `@group_required('staff')` |
 | `@any_group_required('g1', 'g2')` | Vereist één van de groepen | `@any_group_required('vip', 'premium')` |
 | `@require_2fa` | Vereist 2FA validatie | `@require_2fa` |
+| `@require_2fa(max_age=N)` | Vereist ook een recente login (RFC 9470) | `@require_2fa(max_age=300)` |
 | `@require_scope('s1', 's2')` | Vereist OAuth-scope(s), los van RPR-permissies | `@require_scope('gms.deploy')` |
 
 ### Current User Properties
@@ -943,6 +969,7 @@ rpr_auth.validate_token()                    # Valideer access token
 rpr_auth.validate_2fa()                      # Valideer 2FA status (acr=mfa/phr)
 rpr_auth.require_2fa_reauth()                # OIDC step-up: acr_values=mfa (bestaande 2FA/passkey voldoet)
 rpr_auth.require_2fa_reauth(force_fresh=True) # Forceer verse 2FA (prompt=login, voor gevoelige acties)
+rpr_auth.require_2fa_reauth(max_age=300)     # RFC 9470: forceer herlogin als auth_time > 300s oud is
 rpr_auth.require_fresh_2fa('_key')           # Verse 2FA voor specifieke actie (per session_key)
 ```
 

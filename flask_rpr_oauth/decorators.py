@@ -7,6 +7,7 @@ Automatically detects Bearer tokens and falls back to session-based auth.
 """
 
 import logging
+import time
 from functools import wraps
 from urllib.parse import urlparse
 from flask import abort, current_app, g, session, redirect, url_for, request, jsonify
@@ -153,16 +154,17 @@ def _default_challenge_scopes():
 
 
 def _bearer_unauthorized(
-    payload, *, error_code="invalid_token", acr_values=None, required_scopes=None
+    payload, *, error_code="invalid_token", acr_values=None, max_age=None, required_scopes=None
 ):
     """Bouw een 401-response met een RFC 6750 ``WWW-Authenticate: Bearer``-challenge.
 
     De challenge draagt ``resource_metadata`` (RFC 9728) en, indien bekend, een ``scope``-hint
     (RFC 6750 §3) zodat een client (bijv. een MCP-client) bij een 401 automatisch de juiste
-    authorization server, audience én scope kan ontdekken. ``error_code`` en ``acr_values``
-    zijn parameters zodat een RFC 9470 step-up-challenge
-    (``error="insufficient_user_authentication"``, ``acr_values="mfa"``) hier op aanhaakt.
-    ``payload`` blijft het bestaande JSON-body-formaat (backwards-compatibel).
+    authorization server, audience én scope kan ontdekken. ``error_code``, ``acr_values`` en
+    ``max_age`` zijn parameters zodat een RFC 9470 step-up-challenge
+    (``error="insufficient_user_authentication"``, ``acr_values="mfa"`` en/of
+    ``max_age="<seconden>"``) hier op aanhaakt. ``payload`` blijft het bestaande
+    JSON-body-formaat (backwards-compatibel).
 
     RFC 6750 §3.1: droeg de request helemaal geen token, dan krijgt de challenge GEEN
     ``error``-attribuut (alleen ``resource_metadata``/``scope``); dat onderscheid wordt hier
@@ -182,6 +184,8 @@ def _bearer_unauthorized(
         challenge += f', error="{error_code}"'
     if acr_values:
         challenge += f', acr_values="{acr_values}"'
+    if max_age is not None:
+        challenge += f', max_age="{max_age}"'
     if use_dpop:
         from .dpop import DPOP_SIGNING_ALGS
 
@@ -710,11 +714,13 @@ def any_group_required(*groups, **method_groups):
     return decorator
 
 
-def require_2fa(f):
+def require_2fa(f=None, *, max_age=None):
     """
     Decorator that requires the user to have completed 2FA.
 
     Supports both Bearer tokens (API) and session-based (browser) authentication.
+    Usable bare (``@require_2fa``) or with an optional RFC 9470 §4 ``max_age``
+    (``@require_2fa(max_age=300)``).
 
     Bearer token mode:
         - User tokens: checks the `acr` claim in the userinfo response.
@@ -722,17 +728,32 @@ def require_2fa(f):
           401 RFC 9470 step-up challenge (`WWW-Authenticate: Bearer
           error="insufficient_user_authentication", acr_values="mfa"`), so the client knows
           to re-authenticate at a higher level via `/oauth/authorize?acr_values=mfa`.
+        - With `max_age` set: also requires `auth_time` (userinfo/introspection) to be
+          no older than `max_age` seconds. A missing `auth_time` (M2M-style tokens,
+          or an auth server predating this claim) counts as too old. A challenge whose
+          only problem is a stale `auth_time` uses
+          `{"error": "reauthentication_required", ...}` instead of `mfa_required`, and
+          adds `max_age="<seconds>"` to the `WWW-Authenticate` header — existing
+          consumers that never pass `max_age` see no change at all.
         - M2M tokens: always rejected with 403 — M2M has no 2FA concept and cannot step up.
 
     Session mode:
         - Redirects to login if the user is not authenticated.
         - Starts a new OAuth flow with acr_values=mfa if 2FA has not been completed.
+        - With `max_age` set: also checks the session's `auth_time` and, if stale,
+          restarts the OIDC flow with `max_age=<seconds>` so the auth server forces a
+          fresh login (rather than accepting an existing SSO session).
 
     Example:
         @app.route('/admin/dashboard')
         @require_2fa
         def admin_dashboard():
             return 'Admin Dashboard - 2FA required'
+
+        @app.route('/admin/danger-zone')
+        @require_2fa(max_age=300)
+        def danger_zone():
+            return 'Requires a login within the last 5 minutes'
 
     Note:
         - Passkey login (`acr="phr"`) satisfies automatically — no additional 2FA requested.
@@ -743,89 +764,126 @@ def require_2fa(f):
           that clears the auth server session. Use `require_fresh_2fa()` for that instead.
     """
 
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        # Bearer token pad (API-mode)
-        if _is_bearer_token_request():
-            token = _get_bearer_token()
-            userinfo = _get_userinfo_from_token(token)
+    def decorator(func):
+        @wraps(func)
+        def decorated_function(*args, **kwargs):
+            # Bearer token pad (API-mode)
+            if _is_bearer_token_request():
+                token = _get_bearer_token()
+                userinfo = _get_userinfo_from_token(token)
 
-            if not userinfo:
-                return _bearer_unauthorized(
-                    {"error": "invalid_token", "message": "Invalid or expired token"}
-                )
+                if not userinfo:
+                    return _bearer_unauthorized(
+                        {"error": "invalid_token", "message": "Invalid or expired token"}
+                    )
 
-            # M2M tokens hebben geen gebruiker en daarmee geen 2FA-concept
-            if userinfo.get("token_type") == "m2m":
-                logger.warning(
-                    "require_2fa: M2M token van %s afgewezen voor %s",
-                    userinfo.get("sub"),
-                    request.path,
-                )
-                return (
-                    jsonify(
-                        {
-                            "error": "mfa_required",
-                            "message": "M2M tokens cannot satisfy 2FA requirement",
+                # M2M tokens hebben geen gebruiker en daarmee geen 2FA-concept
+                if userinfo.get("token_type") == "m2m":
+                    logger.warning(
+                        "require_2fa: M2M token van %s afgewezen voor %s",
+                        userinfo.get("sub"),
+                        request.path,
+                    )
+                    return (
+                        jsonify(
+                            {
+                                "error": "mfa_required",
+                                "message": "M2M tokens cannot satisfy 2FA requirement",
+                            }
+                        ),
+                        403,
+                    )
+
+                acr = userinfo.get("acr", "pwd")
+                acr_insufficient = acr not in ("mfa", "phr")
+
+                # RFC 9470 §4: naast de acr ook auth_time toetsen aan max_age, indien opgegeven.
+                max_age_exceeded = False
+                if max_age is not None:
+                    auth_time = userinfo.get("auth_time")
+                    max_age_exceeded = auth_time is None or (time.time() - auth_time) > max_age
+
+                if acr_insufficient or max_age_exceeded:
+                    logger.warning(
+                        "require_2fa: acr=%r auth_time=%r onvoldoende (max_age=%s) voor %s op %s",
+                        acr,
+                        userinfo.get("auth_time"),
+                        max_age,
+                        userinfo.get("sub"),
+                        request.path,
+                    )
+                    # RFC 9470 step-up-challenge: het token is geldig, maar het auth-niveau
+                    # (of -moment) is onvoldoende. De JSON-body blijft "mfa_required" tenzij
+                    # specifiek auth_time het probleem is (backwards-compatibel: consumers
+                    # die max_age niet zetten zien deze tak nooit).
+                    if max_age_exceeded:
+                        body = {
+                            "error": "reauthentication_required",
+                            "message": f"Re-authentication required (max_age={max_age})",
                         }
-                    ),
-                    403,
-                )
+                    else:
+                        body = {"error": "mfa_required", "message": "2FA required (acr=mfa or phr)"}
+                    return _bearer_unauthorized(
+                        body,
+                        error_code="insufficient_user_authentication",
+                        acr_values="mfa" if acr_insufficient else None,
+                        max_age=max_age if max_age_exceeded else None,
+                    )
 
-            acr = userinfo.get("acr", "pwd")
-            if acr not in ("mfa", "phr"):
+                g._rpr_token_info = userinfo
+                return func(*args, **kwargs)
+
+            # Sessie-pad (browser-mode)
+            if not current_user.is_authenticated:
+                session["next"] = request.url
+                session.modified = True  # Forceer sessie-opslag in Redis/filesystem
+                return redirect(url_for("auth.login"))
+
+            blocked = _check_user_status()
+            if blocked:
+                return blocked
+
+            # Haal RPRAuth instance op
+            rpr_auth = current_app.extensions.get("rpr_auth")
+            if not rpr_auth:
+                logger.error("RPRAuth niet gevonden in extensions")
+                abort(500)
+
+            # Valideer 2FA status (checkt session + server indien nodig)
+            if not rpr_auth.validate_2fa():
                 logger.warning(
-                    "require_2fa: acr=%r onvoldoende voor %s op %s",
-                    acr,
-                    userinfo.get("sub"),
-                    request.path,
-                )
-                # RFC 9470 step-up-challenge: het token is geldig, maar het auth-niveau is te
-                # laag. Antwoord 401 met WWW-Authenticate: Bearer
-                # error="insufficient_user_authentication", acr_values="mfa" — dan weet de
-                # client machinaal dat de gebruiker naar /oauth/authorize (acr_values=mfa)
-                # moet. De JSON-body blijft ongewijzigd (backwards-compatibel).
-                return _bearer_unauthorized(
-                    {"error": "mfa_required", "message": "2FA required (acr=mfa or phr)"},
-                    error_code="insufficient_user_authentication",
-                    acr_values="mfa",
+                    f"User {current_user.get_id()} heeft geen 2FA validatie voor {request.path}"
                 )
 
-            g._rpr_token_info = userinfo
-            return f(*args, **kwargs)
+                # Sla de huidige URL op in session voor redirect na 2FA
+                session["next"] = request.url
+                session.modified = True  # Forceer sessie-opslag in Redis/filesystem
 
-        # Sessie-pad (browser-mode)
-        if not current_user.is_authenticated:
-            session["next"] = request.url
-            session.modified = True  # Forceer sessie-opslag in Redis/filesystem
-            return redirect(url_for("auth.login"))
+                # Start nieuwe OAuth flow met 2FA requirement (acr_values=mfa)
+                return rpr_auth.require_2fa_reauth()
 
-        blocked = _check_user_status()
-        if blocked:
-            return blocked
+            if max_age is not None:
+                auth_time = session.get("auth_time")
+                if auth_time is None or (time.time() - auth_time) > max_age:
+                    logger.warning(
+                        "require_2fa: sessie auth_time=%r te oud voor max_age=%s (user=%s)",
+                        auth_time,
+                        max_age,
+                        current_user.get_id(),
+                    )
+                    session["next"] = request.url
+                    session.modified = True
+                    # max_age dwingt de auth server een verse login af (niet enkel acr_values),
+                    # ook als er nog een geldige SSO-sessie bestaat op de auth server.
+                    return rpr_auth.require_2fa_reauth(max_age=max_age)
 
-        # Haal RPRAuth instance op
-        rpr_auth = current_app.extensions.get("rpr_auth")
-        if not rpr_auth:
-            logger.error("RPRAuth niet gevonden in extensions")
-            abort(500)
+            return func(*args, **kwargs)
 
-        # Valideer 2FA status (checkt session + server indien nodig)
-        if not rpr_auth.validate_2fa():
-            logger.warning(
-                f"User {current_user.get_id()} heeft geen 2FA validatie voor {request.path}"
-            )
+        return decorated_function
 
-            # Sla de huidige URL op in session voor redirect na 2FA
-            session["next"] = request.url
-            session.modified = True  # Forceer sessie-opslag in Redis/filesystem
-
-            # Start nieuwe OAuth flow met 2FA requirement (acr_values=mfa)
-            return rpr_auth.require_2fa_reauth()
-
-        return f(*args, **kwargs)
-
-    return decorated_function
+    if f is not None:
+        return decorator(f)
+    return decorator
 
 
 # Extra decorators for explicit user/m2m enforcement

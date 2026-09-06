@@ -10,6 +10,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** legacy `/auth/webhook/*` receivers removed (zie Removed).
 
 ### Added
+- **RFC 9470 §4 `max_age`-challenge in `@require_2fa`**: `@require_2fa` accepteert nu een
+  optionele `max_age` (seconden), naast bare gebruik (`@require_2fa` blijft werken).
+  Toetst `auth_time` (nieuw veld in userinfo/introspectie, resp. opgeslagen in de sessie
+  bij login/2FA-hercheck) tegen `max_age`; ontbrekende of te oude `auth_time` forceert
+  (her)authenticatie ook als `acr` zelf al voldoet. Bearer: `401` met
+  `WWW-Authenticate: Bearer error="insufficient_user_authentication", max_age="<seconden>"`
+  (plus `acr_values` als die eis ook faalt); JSON-body `reauthentication_required` als
+  alleen `auth_time` het probleem is, anders de bestaande `mfa_required`-body — routes
+  zonder `max_age` zien geen verschil. Sessie: `require_2fa_reauth(max_age=...)` stuurt
+  `max_age` mee in de authorize-redirect zodat de auth server een bestaande SSO-sessie
+  niet zomaar accepteert. M2M blijft `403`. `core.py`/`mcp.py`: `auth_time` zit nu ook in
+  `AccessToken.claims`, zodat een MCP-server zelf op `max_age` kan toetsen.
 - **BCL/SSF-ontvanger-hardening**: de gedeelde SET-validatie (`_validate_set`)
   controleert nu ook de JWT `typ`-header (`logout+jwt` voor back-channel-logout,
   `secevent+jwt` voor SSF — verkeerd/ontbrekend wordt geweigerd), en eist een unieke

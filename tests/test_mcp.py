@@ -75,6 +75,22 @@ class TestVerifyToken:
         assert result.claims["token_type"] == "m2m"
         assert result.claims["permissions"] == ["gms.read", "gms.write"]
 
+    def test_auth_time_included_in_claims(self):
+        verifier = _verifier()
+        data = {"sub": "42", "token_type": "user", "auth_time": 1700000000}
+        with patch.object(verifier._core, "verify_bearer", return_value=data):
+            result = asyncio.run(verifier.verify_token("user-token"))
+
+        assert result.claims["auth_time"] == 1700000000
+
+    def test_missing_auth_time_is_none_in_claims(self):
+        verifier = _verifier()
+        data = {"sub": "gms-worker", "token_type": "m2m"}  # M2M: geen auth_time
+        with patch.object(verifier._core, "verify_bearer", return_value=data):
+            result = asyncio.run(verifier.verify_token("m2m-token"))
+
+        assert result.claims["auth_time"] is None
+
     def test_valid_user_token_maps_to_access_token(self):
         verifier = _verifier()
         data = {
