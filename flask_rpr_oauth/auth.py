@@ -9,6 +9,7 @@ import base64
 import json
 import logging
 import re
+import secrets
 import threading
 import time
 from typing import Optional
@@ -175,6 +176,28 @@ try{if(window.top&&window.top!==window){window.top.postMessage(m,'*');}}catch(e)
 </body></html>"""
 
 
+# Picker for OAUTH_DEV_LOGIN: no external assets, unmistakably not a production page.
+_DEV_LOGIN_HTML = """<!doctype html>
+<html lang="nl"><head><meta charset="utf-8"><title>Dev login</title>
+<style>html,body{height:100%;margin:0}body{font-family:system-ui,sans-serif;background:#0f1115;
+color:#e6e6e6;display:flex;align-items:center;justify-content:center}.b{text-align:center;
+max-width:520px;padding:2rem}.warn{background:#c0392b;color:#fff;font-weight:700;padding:.75rem 1rem;
+margin-bottom:1.5rem;border-radius:4px}h1{font-size:1.25rem;margin:0 0 .75rem}p{opacity:.7;line-height:1.6}
+form{display:inline-block;margin:.35rem}button{font:inherit;padding:.6rem 1.2rem;border:0;border-radius:4px;
+background:#5865F2;color:#fff;cursor:pointer}button:hover{background:#4752c4}</style></head>
+<body><div class="b"><div class="warn">DEV LOGIN &middot; niet voor productie</div>
+<h1>Inloggen zonder auth-server</h1>
+<p>Kies een dev-gebruiker. Deze pagina bestaat alleen in debug-modus met OAUTH_DEV_LOGIN.</p>
+{{ forms|safe }}
+</div></body></html>"""
+
+
+def _dev_login_active(app) -> bool:
+    """Dev login needs the explicit config switch AND Flask debug mode. Both are re-checked
+    on every request, so a stale session or route can never outlive the switch."""
+    return bool(app.config.get("OAUTH_DEV_LOGIN")) and bool(app.debug)
+
+
 def _post_logout_form(action: str, params: dict):
     """
     Render an auto-submitting HTML POST form for RP-Initiated Logout.
@@ -254,6 +277,28 @@ class RPRAuth:
         app.config.setdefault("OAUTH_PARTITIONED_COOKIES", True)
         app.config.setdefault("OAUTH_TIMEOUT", 10)
         app.config.setdefault("OAUTH_TOKEN_REVALIDATE_INTERVAL", 300)
+        # Local dev login without the auth server (see _handle_dev_login). Never read from
+        # env here: the host app sets OAUTH_DEV_LOGIN deliberately, and only under debug.
+        app.config.setdefault("OAUTH_DEV_LOGIN", False)
+        app.config.setdefault("OAUTH_DEV_USERS", {})
+        app.config.setdefault("OAUTH_ON_DEV_LOGIN", None)
+        if app.config["OAUTH_DEV_LOGIN"]:
+            if not app.debug:
+                raise RuntimeError(
+                    "OAUTH_DEV_LOGIN requires app.debug (FLASK_DEBUG=1); refusing to start"
+                )
+            users = app.config["OAUTH_DEV_USERS"]
+            if not isinstance(users, dict) or not users or any(
+                not isinstance(u, dict) or not u.get("sub") for u in users.values()
+            ):
+                raise RuntimeError(
+                    "OAUTH_DEV_LOGIN needs OAUTH_DEV_USERS: {key: userinfo dict with 'sub'}"
+                )
+            logger.warning(
+                "DEV LOGIN ENABLED: /auth/login accepts %s without the auth server. "
+                "Never in production.",
+                ", ".join(users),
+            )
         # Session bootstrap-route (/auth/session-bootstrap): zet een first-party sessie op
         # vanuit een vooraf gemunt access token (RFC 8693 token-exchange resultaat).
         # Standaard AAN zodat onze applicaties direct in FiveM (NUI-iframe) beschikbaar zijn.
@@ -365,6 +410,11 @@ class RPRAuth:
 
     def _handle_login(self):
         """Start OAuth login flow."""
+        # The picker lives here rather than on its own route: the decorators redirect to
+        # auth.login unconditionally, so this is the one place every login attempt passes.
+        if _dev_login_active(current_app):
+            return self._dev_login_picker()
+
         redirect_uri = current_app.config["OAUTH_REDIRECT_URI"]
 
         # Check if 2FA is required for this app
@@ -377,6 +427,54 @@ class RPRAuth:
             )
 
         return self.auth_server.authorize_redirect(redirect_uri)
+
+    def _dev_login_picker(self):
+        """Render the dev user picker (OAUTH_DEV_LOGIN). The nonce makes the POST a
+        deliberate click on this page rather than a cross-site form submission."""
+        nonce = secrets.token_urlsafe(16)
+        session["_dev_login_nonce"] = nonce
+        session.modified = True
+        forms = "".join(
+            f'<form method="post" action="{escape(url_for("auth.dev_login", key=key))}">'
+            f'<input type="hidden" name="nonce" value="{escape(nonce)}">'
+            f"<button type=\"submit\">{escape(key)}</button></form>"
+            for key in current_app.config["OAUTH_DEV_USERS"]
+        )
+        resp = make_response(render_template_string(_DEV_LOGIN_HTML, forms=forms))
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
+    def _handle_dev_login(self, key):
+        """Log in as one of OAUTH_DEV_USERS without the auth server.
+
+        Every gate is re-checked per request, so a route that somehow outlived the switch
+        still answers 404. The session gets the same shape as after a real callback plus
+        `oauth_dev`, which _validate_session_token and _handle_logout use to stay offline.
+        """
+        if not _dev_login_active(current_app):
+            abort(404)
+        userinfo = current_app.config["OAUTH_DEV_USERS"].get(key)
+        if not userinfo:
+            abort(404)
+        nonce = session.pop("_dev_login_nonce", None)
+        if not nonce or not secrets.compare_digest(nonce, request.form.get("nonce", "")):
+            abort(400)
+
+        self._populate_session({"access_token": "dev", "token_type": "dev", "scope": ""}, userinfo)
+        session["oauth_dev"] = True
+        session.modified = True
+
+        hook = current_app.config.get("OAUTH_ON_DEV_LOGIN")
+        if hook:
+            hook(userinfo)
+        logger.warning(
+            "DEV LOGIN as %r (sub %s) from %s", key, userinfo.get("sub"), request.remote_addr
+        )
+
+        next_page = (session.pop("next", None) or "").replace("\\", "")
+        if not next_page or not _is_safe_redirect(next_page):
+            next_page = url_for("index")
+        return redirect(next_page, code=303)
 
     @csrf_exempt
     def _handle_callback(self):
@@ -720,6 +818,12 @@ class RPRAuth:
 
     def _handle_logout(self):
         """Logout: clear local session and initiate RP-Initiated Logout on the auth server."""
+        if session.get("oauth_dev"):
+            # Nothing to revoke and no end-session at a server that was never involved.
+            session.clear()
+            logger.info("Dev-sessie beëindigd")
+            return redirect(url_for("index"))
+
         # Bewaar het ID token vóór session.clear() voor de id_token_hint
         token = session.get("oauth_token", {})
         id_token = token.get("id_token")
@@ -1392,6 +1496,11 @@ class RPRAuth:
         auth_bp = Blueprint("auth", __name__, url_prefix="/auth")
 
         auth_bp.add_url_rule("/login", "login", self._handle_login)
+        # Absent entirely unless dev login is on: no route to probe in production.
+        if _dev_login_active(app):
+            auth_bp.add_url_rule(
+                "/dev-login/<key>", "dev_login", self._handle_dev_login, methods=["POST"]
+            )
         auth_bp.add_url_rule("/callback", "callback", self._handle_callback)
         auth_bp.add_url_rule("/logout", "logout", self._handle_logout, methods=["GET", "POST"])
         auth_bp.add_url_rule(
@@ -1631,6 +1740,14 @@ class RPRAuth:
         # Bearer token (bijv. na token-refresh door rpr_core).
         if request.headers.get("Authorization", "").startswith("Bearer "):
             return None
+
+        if session.get("oauth_dev"):
+            # A dev session has no server token to revalidate. It is only trusted while dev
+            # login is switched on in this process; one that reached this app's session
+            # store otherwise (shared Redis, copied cookie) is wiped, not skipped.
+            if _dev_login_active(current_app):
+                return None
+            return self._reauth_or_redirect("Dev-sessie buiten dev-modus geweigerd, sessie gewist")
 
         interval = current_app.config.get("OAUTH_TOKEN_REVALIDATE_INTERVAL", 300)
 

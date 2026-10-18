@@ -10,6 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** legacy `/auth/webhook/*` receivers removed (zie Removed).
 
 ### Added
+- **Dev login zonder auth-server (`OAUTH_DEV_LOGIN`)**: met `OAUTH_DEV_LOGIN=True` en
+  `OAUTH_DEV_USERS={key: userinfo}` toont `/auth/login` een keuzepagina en logt
+  `POST /auth/dev-login/<key>` lokaal in met dezelfde sessievorm als een echte callback
+  (plus `oauth_dev`). Sloten: de app weigert te starten zonder `app.debug` of zonder
+  bruikbare `OAUTH_DEV_USERS`; de route bestaat alleen als dev-login aan staat en
+  controleert de schakelaar per request; een dev-sessie wordt gewist zodra dev-login uit
+  staat (`_validate_session_token`); logout raakt de auth-server niet; CSRF-nonce op de
+  keuzepagina. Optionele host-hook `OAUTH_ON_DEV_LOGIN(userinfo)` voor lokale
+  gebruikersrijen. Zie README "Dev login (lokaal, zonder auth server)".
 - **RFC 9470 §4 `max_age`-challenge in `@require_2fa`**: `@require_2fa` accepteert nu een
   optionele `max_age` (seconden), naast bare gebruik (`@require_2fa` blijft werken).
   Toetst `auth_time` (nieuw veld in userinfo/introspectie, resp. opgeslagen in de sessie

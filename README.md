@@ -270,6 +270,37 @@ app.config['SESSION_PERMANENT'] = True
 app.config['PERMANENT_SESSION_LIFETIME'] = 3600  # 1 uur
 ```
 
+## Dev login (lokaal, zonder auth server)
+
+Voor lokaal ontwikkelen zonder verbinding met de auth-server:
+
+```python
+app.debug = True  # of FLASK_DEBUG=1
+app.config['OAUTH_BASE_URL'] = 'http://auth.dev.invalid'  # placeholder, nooit de echte
+app.config['OAUTH_DEV_LOGIN'] = True
+app.config['OAUTH_DEV_USERS'] = {
+    'admin': {'sub': '900004', 'email': 'admin@dev.invalid', 'given_name': 'Dev',
+              'family_name': 'Admin', 'user_type': 'MEMBER', 'user_status': 'ACTIVE',
+              'acr': 'mfa', 'permissions': ['app.thing.edit'], 'groups': []},
+}
+app.config['OAUTH_ON_DEV_LOGIN'] = maak_lokale_gebruikersrij  # optioneel: hook(userinfo)
+```
+
+`/auth/login` toont dan een keuzepagina; `POST /auth/dev-login/<key>` vult de sessie zoals
+een echte callback (plus `oauth_dev`). Alle decorators en `current_user` werken ongewijzigd.
+
+Sloten tegen misbruik:
+
+- Start weigert (`RuntimeError`) als `OAUTH_DEV_LOGIN` aan staat zonder `app.debug`, of zonder
+  bruikbare `OAUTH_DEV_USERS` (elke entry heeft een `sub`).
+- De dev-login-route wordt alleen geregistreerd als dev-login aan staat, en controleert de
+  schakelaar opnieuw per request (404 anders).
+- Een `oauth_dev`-sessie wordt gewist zodra dev-login uit staat, ook als die via een gedeelde
+  Redis binnenkomt.
+- Logout raakt de auth-server niet; de keuzepagina gebruikt een single-use nonce (login-CSRF).
+- Het pakket leest nooit env: de host-app zet `OAUTH_DEV_LOGIN` bewust, bij voorkeur achter een
+  eigen schakelaar die ook een placeholder-`OAUTH_BASE_URL` afdwingt.
+
 ## Routes
 
 De package registreert automatisch de volgende routes:
