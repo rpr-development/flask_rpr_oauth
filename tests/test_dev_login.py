@@ -217,6 +217,106 @@ def test_dev_session_is_wiped_once_the_switch_is_off(app, client):
         assert "oauth_user" not in sess and "oauth_dev" not in sess
 
 
+def _no_server(auth, monkeypatch):
+    def _boom(*a, **k):
+        raise AssertionError("auth server must not be contacted for a dev session")
+
+    monkeypatch.setattr(auth.auth_server, "authorize_redirect", _boom)
+    monkeypatch.setattr(auth_module.requests, "get", _boom)
+
+
+def test_login_sets_auth_time_to_the_moment_of_picking(client, monkeypatch):
+    monkeypatch.setattr(auth_module.time, "time", lambda: 1_700_000_000)
+    _login(client)
+    with client.session_transaction() as sess:
+        assert sess["auth_time"] == 1_700_000_000
+
+
+# ---------------------------------------------------------------------------
+# CSRF and 2FA step-up
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("csrf_first", [True, False])
+def test_dev_login_passes_the_host_csrf_protection(csrf_first, monkeypatch):
+    csrf_module = pytest.importorskip("flask_wtf.csrf")
+    app = _make_app()
+    csrf = csrf_module.CSRFProtect()
+    if csrf_first:
+        csrf.init_app(app)
+    RPRAuth(app)
+    if not csrf_first:
+        csrf.init_app(app)
+    client = app.test_client()
+
+    assert _login(client).status_code == 303
+    with client.session_transaction() as sess:
+        assert sess["oauth_dev"] is True
+
+
+def test_host_csrf_still_protects_other_posts():
+    csrf_module = pytest.importorskip("flask_wtf.csrf")
+    app = _make_app()
+
+    @app.route("/save", methods=["POST"])
+    def save():
+        return "saved"
+
+    csrf_module.CSRFProtect(app)
+    RPRAuth(app)
+
+    assert app.test_client().post("/save").status_code == 400
+
+
+def _guarded_routes(app, auth):
+    from flask_rpr_oauth import require_2fa
+
+    @app.route("/admin/")
+    def admin():
+        return auth.require_fresh_2fa("_admin_2fa_granted") or "admin"
+
+    @app.route("/danger/")
+    @require_2fa(max_age=300)
+    def danger():
+        return "danger"
+
+
+def test_fresh_2fa_is_granted_from_the_dev_acr(app, auth, client, monkeypatch):
+    _guarded_routes(app, auth)
+    _no_server(auth, monkeypatch)
+    _login(client, "admin")
+
+    assert client.get("/admin/").get_data(as_text=True) == "admin"
+    assert client.get("/danger/").get_data(as_text=True) == "danger"
+    with client.session_transaction() as sess:
+        assert sess["_admin_2fa_granted"] is True
+
+
+def test_dev_user_without_mfa_gets_403_instead_of_the_auth_server(app, auth, client, monkeypatch):
+    _guarded_routes(app, auth)
+    _no_server(auth, monkeypatch)
+    _login(client, "eenheid")
+
+    assert client.get("/admin/").status_code == 403
+    assert client.get("/danger/").status_code == 403
+    with client.session_transaction() as sess:
+        assert "_admin_2fa_granted" not in sess
+
+
+def test_fresh_2fa_is_not_granted_once_the_switch_is_off(app, auth, client, monkeypatch):
+    _no_server(auth, monkeypatch)
+    _login(client, "admin")
+    app.config["OAUTH_DEV_LOGIN"] = False
+
+    with app.test_request_context("/admin/"):
+        from flask import session
+
+        session.update(oauth_dev=True, acr="mfa", oauth_user={"oauth_id": "900004"})
+        with pytest.raises(Exception) as exc:
+            auth.require_fresh_2fa("_admin_2fa_granted")
+        assert getattr(exc.value, "code", None) == 403
+        assert "_admin_2fa_granted" not in session
+
+
 def test_logout_clears_without_touching_the_server(client, auth, monkeypatch):
     def _boom(*a, **k):
         raise AssertionError("auth server must not be contacted for a dev session")

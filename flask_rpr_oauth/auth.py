@@ -444,6 +444,15 @@ class RPRAuth:
         resp.headers["Cache-Control"] = "no-store"
         return resp
 
+    def _exempt_dev_login_from_csrf(self, app):
+        csrf = app.extensions.get("csrf")
+        if csrf is not None and hasattr(csrf, "exempt"):
+            csrf.exempt(self._handle_dev_login)
+
+    def _exempt_dev_login_from_csrf_on_request(self):
+        if request.endpoint == "auth.dev_login":
+            self._exempt_dev_login_from_csrf(current_app)
+
     def _handle_dev_login(self, key):
         """Log in as one of OAUTH_DEV_USERS without the auth server.
 
@@ -462,6 +471,9 @@ class RPRAuth:
 
         self._populate_session({"access_token": "dev", "token_type": "dev", "scope": ""}, userinfo)
         session["oauth_dev"] = True
+        # Picking a user is the authentication event; without this every max_age route would
+        # treat the dev session as too old and try to step up at a server it never saw.
+        session["auth_time"] = userinfo.get("auth_time") or int(time.time())
         session.modified = True
 
         hook = current_app.config.get("OAUTH_ON_DEV_LOGIN")
@@ -1501,6 +1513,11 @@ class RPRAuth:
             auth_bp.add_url_rule(
                 "/dev-login/<key>", "dev_login", self._handle_dev_login, methods=["POST"]
             )
+            # The picker's single-use nonce is the CSRF token. Flask-WTF 1.3 ignores the
+            # _csrf_exempt attribute, so exempt the view at the host's CSRFProtect: now if it
+            # was initialised first, otherwise from a hook that runs before its own.
+            self._exempt_dev_login_from_csrf(app)
+            app.before_request(self._exempt_dev_login_from_csrf_on_request)
         auth_bp.add_url_rule("/callback", "callback", self._handle_callback)
         auth_bp.add_url_rule("/logout", "logout", self._handle_logout, methods=["GET", "POST"])
         auth_bp.add_url_rule(
@@ -1887,6 +1904,10 @@ class RPRAuth:
             f"server check uitvoeren"
         )
 
+        if session.get("oauth_dev"):
+            # The session is all there is: the "dev" access token means nothing to the server.
+            return False
+
         # If not in session, check with server
         if "oauth_token" not in session:
             logger.info("validate_2fa: geen oauth_token in session, return False")
@@ -1994,6 +2015,20 @@ class RPRAuth:
         Returns:
             Flask redirect response to the OAuth authorize endpoint
         """
+        if session.get("oauth_dev"):
+            # A dev session cannot step up: the auth server never saw it, and sending the
+            # browser there would leave local dev for a production login.
+            logger.warning(
+                "Step-up refused for dev session (sub %s)",
+                session.get("oauth_user", {}).get("oauth_id"),
+            )
+            abort(
+                403,
+                description=(
+                    "Dev session lacks 2FA: give this OAUTH_DEV_USERS entry acr 'mfa' or 'phr'."
+                ),
+            )
+
         # §6 laag-2: in een FiveM NUI-iframe nooit in-CEF redirecten — signaleer de host-NUI.
         if session.get("rpr_embedded"):
             return self._embedded_auth_signal(
@@ -2045,6 +2080,15 @@ class RPRAuth:
         # Al geautoriseerd in deze sessie voor deze actie
         if session.get(session_key, False):
             return None
+
+        if session.get("oauth_dev"):
+            # No fresh 2FA exists for a dev user; its configured acr is the whole answer, but
+            # only while dev login is on here, whatever order the before_request hooks run in.
+            if _dev_login_active(current_app) and self.validate_2fa():
+                session[session_key] = True
+                session.modified = True
+                return None
+            return self.require_2fa_reauth(force_fresh=True)
 
         # Teruggekeerd van reauth — controleer of 2FA daadwerkelijk is voltooid
         pending_key = f"{session_key}_pending"

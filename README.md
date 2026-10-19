@@ -289,6 +289,15 @@ app.config['OAUTH_ON_DEV_LOGIN'] = maak_lokale_gebruikersrij  # optioneel: hook(
 `/auth/login` toont dan een keuzepagina; `POST /auth/dev-login/<key>` vult de sessie zoals
 een echte callback (plus `oauth_dev`). Alle decorators en `current_user` werken ongewijzigd.
 
+- **2FA:** een dev-sessie kan geen step-up doen bij de auth-server. `validate_2fa`,
+  `@require_2fa` en `require_fresh_2fa` kijken alleen naar de `acr` van de dev-user
+  (`mfa`/`phr` = voldaan). Zonder die `acr` volgt een `403` in plaats van een redirect naar
+  de auth-server. `auth_time` is het moment van inloggen, tenzij de entry er zelf een heeft.
+- **CSRF:** de route stelt zich zelf vrij bij de `CSRFProtect` van de host (Flask-WTF), in
+  welke volgorde die ook geïnitialiseerd is; de nonce van de keuzepagina is de CSRF-token.
+- **Cookies over http:** een host met `SESSION_COOKIE_SECURE=True` (of `SameSite=None`)
+  verliest de sessiecookie op `http://localhost`; zet die lokaal op `False` / `'Lax'`.
+
 Sloten tegen misbruik:
 
 - Start weigert (`RuntimeError`) als `OAUTH_DEV_LOGIN` aan staat zonder `app.debug`, of zonder

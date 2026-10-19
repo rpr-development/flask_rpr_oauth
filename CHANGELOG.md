@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   staat (`_validate_session_token`); logout raakt de auth-server niet; CSRF-nonce op de
   keuzepagina. Optionele host-hook `OAUTH_ON_DEV_LOGIN(userinfo)` voor lokale
   gebruikersrijen. Zie README "Dev login (lokaal, zonder auth server)".
+  - De dev-login-route stelt zich vrij bij de `CSRFProtect` van de host; Flask-WTF 1.3
+    negeert `_csrf_exempt`, waardoor de POST eerder met "CSRF token is missing" strandde.
+  - Een dev-sessie doet nooit een step-up bij de auth-server: `require_fresh_2fa` en
+    `@require_2fa` accepteren de `acr` van de dev-user en geven anders `403`;
+    `validate_2fa` vraagt de userinfo niet op met het `dev`-token. `auth_time` wordt bij
+    het inloggen gezet, zodat `max_age`-routes werken.
 - **RFC 9470 §4 `max_age`-challenge in `@require_2fa`**: `@require_2fa` accepteert nu een
   optionele `max_age` (seconden), naast bare gebruik (`@require_2fa` blijft werken).
   Toetst `auth_time` (nieuw veld in userinfo/introspectie, resp. opgeslagen in de sessie
