@@ -213,6 +213,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   geconfigureerd `WEBHOOK_SECRET` in een app wordt vanaf nu simpelweg genegeerd.
 
 ### Fixed
+- `OAUTH_TIMEOUT` werkte niet voor de Authlib-calls (discovery, token-uitwisseling bij de
+  callback, refresh, `userinfo()`): de client werd geregistreerd met `timeout`, dat Authlib
+  stil negeert. Was de auth server onbereikbaar, dan hingen die calls zonder limiet tot
+  gunicorn de worker afschoot (`WORKER TIMEOUT`, een `SystemExit` die door de
+  `except Exception` in de token-refresh heen gaat), met een 502 voor de gebruiker. De client
+  gebruikt nu `default_timeout`. `validate_token()` volgt ook `OAUTH_TIMEOUT` in plaats van een
+  vaste 10 s.
 - README-voorbeeld in de SCIM-sectie zette `OAUTH_AUDIENCE` voor RFC 8707 audience-binding —
   die config-key bestaat niet, de code leest uitsluitend `OAUTH_RESOURCE_ID`. Wie het
   voorbeeld letterlijk volgde, kreeg dus stilzwijgend geen audience-binding.

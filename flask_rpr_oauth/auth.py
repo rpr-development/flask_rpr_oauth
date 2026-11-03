@@ -373,7 +373,11 @@ class RPRAuth:
             ),
             client_kwargs={
                 "scope": app.config["OAUTH_SCOPE"],
-                "timeout": app.config["OAUTH_TIMEOUT"],
+                # Authlib's requests-OAuth2Session past alleen ``default_timeout`` toe op
+                # elke request; een ``timeout``-kwarg wordt stil genegeerd. Zonder dit
+                # hangen discovery-, token- en refresh-calls onbeperkt als de auth server
+                # niet antwoordt, tot gunicorn de worker afschiet (WORKER TIMEOUT).
+                "default_timeout": app.config["OAUTH_TIMEOUT"],
             },
         )
 
@@ -1869,7 +1873,7 @@ class RPRAuth:
             response = requests.get(
                 f"{current_app.config['OAUTH_BASE_URL']}/oauth/userinfo",
                 headers={"Authorization": f"Bearer {access_token}"},
-                timeout=10,
+                timeout=current_app.config.get("OAUTH_TIMEOUT", 10),
             )
 
             return response.status_code == 200

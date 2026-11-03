@@ -103,6 +103,34 @@ class TestProtectedResourceMetadata:
         assert resp.status_code == 404
 
 
+class TestAuthServerTimeout:
+    """OAUTH_TIMEOUT moet de Authlib-calls naar de auth server echt begrenzen.
+
+    Regressie: ``client_kwargs={"timeout": ...}`` werd door Authlib genegeerd, waardoor
+    discovery/refresh onbeperkt hingen tot gunicorn de worker afschoot.
+    """
+
+    def test_server_metadata_fetch_uses_oauth_timeout(self):
+        app = Flask(__name__)
+        app.config.update(
+            SECRET_KEY="test-secret",
+            OAUTH_BASE_URL="https://auth.test.nl",
+            OAUTH_CLIENT_ID="test-client",
+            OAUTH_CLIENT_SECRET="test-secret",
+            OAUTH_REDIRECT_URI="http://localhost/callback",
+            OAUTH_TIMEOUT=7,
+            TESTING=True,
+        )
+        auth = RPRAuth(app)
+
+        with patch("requests.Session.send") as send:
+            send.return_value.status_code = 200
+            send.return_value.json.return_value = {"issuer": "https://auth.test.nl"}
+            auth.auth_server.load_server_metadata()
+
+        assert send.call_args.kwargs.get("timeout") == 7
+
+
 class TestWwwAuthenticateOn401:
     """RFC 6750 — 401's van bearer-beschermde routes dragen een WWW-Authenticate-challenge."""
 
