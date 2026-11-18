@@ -185,3 +185,113 @@ def test_get_onbekende_gebruiker_geeft_404(app, client, valid_token):
 def test_get_zonder_callback_geeft_404(client, valid_token):
     resp = client.get("/scim/v2/Users/42", headers=_headers())
     assert resp.status_code == 404
+
+
+# ------------------------------------------------------------------ patch (alleen active)
+
+PATCH_OP = "urn:ietf:params:scim:api:messages:2.0:PatchOp"
+
+
+def _patch(waarde=False, pad="active", op="replace"):
+    operatie = {"op": op, "value": waarde}
+    if pad is not None:
+        operatie["path"] = pad
+    return {"schemas": [PATCH_OP], "Operations": [operatie]}
+
+
+class _FakeRedis:
+    def __init__(self):
+        self.store = {}
+
+    def setex(self, key, ttl, value):
+        self.store[key] = value
+
+    def get(self, key):
+        return self.store.get(key)
+
+
+@pytest.fixture
+def fake_redis(auth, monkeypatch):
+    r = _FakeRedis()
+    monkeypatch.setattr(auth, "_logout_redis", lambda: r)
+    return r
+
+
+def test_patch_deactiveert_en_beeindigt_sessies(app, client, valid_token, fake_redis):
+    import flask_rpr_oauth.core as core_module
+
+    calls = []
+    app.config["OAUTH_ON_SCIM_PATCH"] = (
+        lambda user_id, changes: calls.append((user_id, changes)) or True
+    )
+    core_module.clear_cache()
+    core_module._cache_set("tok", {"sub": "42", "token_type": "user"}, ttl=60, maxsize=1000)
+
+    resp = client.patch("/scim/v2/Users/42", json=_patch(), headers=_headers())
+
+    assert resp.status_code == 204
+    assert calls == [("42", {"active": False})]
+    assert "rpr:bcl:logout:42" in fake_redis.store
+    assert core_module._cache_get("tok") is None
+
+
+def test_patch_zonder_callback_beeindigt_sessies_en_geeft_204(client, valid_token, fake_redis):
+    resp = client.patch(
+        "/scim/v2/Users/42", json=_patch(pad=None, waarde={"active": False}), headers=_headers()
+    )
+
+    assert resp.status_code == 204
+    assert "rpr:bcl:logout:42" in fake_redis.store
+
+
+def test_patch_onbekende_gebruiker_geeft_404_en_maakt_niets_aan(
+    app, client, valid_token, fake_redis
+):
+    syncs = []
+    app.config["OAUTH_ON_SCIM_SYNC"] = lambda user_id, resource: syncs.append(user_id)
+    app.config["OAUTH_ON_SCIM_PATCH"] = lambda user_id, changes: False
+
+    resp = client.patch("/scim/v2/Users/42", json=_patch(), headers=_headers())
+
+    assert resp.status_code == 404
+    assert syncs == []  # never falls back to the upsert
+
+
+def test_patch_activeren_beeindigt_geen_sessies(app, client, valid_token, fake_redis):
+    app.config["OAUTH_ON_SCIM_PATCH"] = lambda user_id, changes: True
+
+    resp = client.patch("/scim/v2/Users/42", json=_patch(waarde=True), headers=_headers())
+
+    assert resp.status_code == 204
+    assert fake_redis.store == {}
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"Operations": [{"op": "replace", "path": "active", "value": False}]},  # no PatchOp schema
+        {"schemas": [PATCH_OP], "Operations": []},
+        _patch(op="add"),
+        _patch(pad="userName", waarde="x"),
+        _patch(waarde="false"),  # a string is not a boolean
+        _patch(pad=None, waarde={"active": False, "userName": "x"}),
+    ],
+)
+def test_patch_weigert_alles_behalve_active(app, client, valid_token, fake_redis, body):
+    calls = []
+    app.config["OAUTH_ON_SCIM_PATCH"] = lambda user_id, changes: calls.append(changes) or True
+
+    resp = client.patch("/scim/v2/Users/42", json=body, headers=_headers())
+
+    assert resp.status_code == 400
+    assert calls == []
+    assert fake_redis.store == {}  # an invalid request ends no sessions
+
+
+def test_patch_callback_fout_geeft_500(app, client, valid_token, fake_redis):
+    def _boom(user_id, changes):
+        raise RuntimeError("db down")
+
+    app.config["OAUTH_ON_SCIM_PATCH"] = _boom
+    resp = client.patch("/scim/v2/Users/42", json=_patch(), headers=_headers())
+    assert resp.status_code == 500

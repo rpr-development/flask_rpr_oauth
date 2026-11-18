@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** legacy `/auth/webhook/*` receivers removed (zie Removed).
 
 ### Added
+- **SCIM `PATCH /scim/v2/Users/<id>` (RFC 7644 §3.5.2), beperkt tot `active`**: wijzigt alleen een
+  bestaande gebruiker en maakt er nooit een aan, anders dan de PUT-upsert. Bij `active: false`
+  beëindigt de package zelf alle sessies van de gebruiker (uitlog-markering en
+  cache-invalidatie, net als SSF account-disabled), dus ook in apps zonder callback. Optionele
+  callback `OAUTH_ON_SCIM_PATCH(user_id, changes) -> bool` (`False` = onbekend, 404); zonder
+  callback is het antwoord 204. De auth-server gebruikt dit om een account te deactiveren zodra
+  een verwijderverzoek is goedgekeurd, zonder het opnieuw aan te maken bij een systeem dat al
+  gewist heeft.
 - **Dev login zonder auth-server (`OAUTH_DEV_LOGIN`)**: met `OAUTH_DEV_LOGIN=True` en
   `OAUTH_DEV_USERS={key: userinfo}` toont `/auth/login` een keuzepagina en logt
   `POST /auth/dev-login/<key>` lokaal in met dezelfde sessievorm als een echte callback
