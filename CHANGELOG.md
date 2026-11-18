@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **SCIM `PATCH` meldt sessies die niet beëindigd konden worden**: bij `active: false` zonder
+  bruikbare uitlog-markering (geen Redis, Redis onbereikbaar of `OAUTH_ENABLE_BACKCHANNEL_LOGOUT`
+  uit) antwoordt de PATCH nu `503` in plaats van `204`, zodat de auth-server het opnieuw probeert.
+  De app-callback draait nog steeds, zodat bv. sockets toch dichtgaan. Dat geldt ook voor een
+  gebruiker die de app niet kent (anders `404`): de sessie hangt aan de `sub`, niet aan de app-rij.
+- **SCIM `PATCH`-invoer volgens RFC 7643/7644**: attribuutnamen hoofdletterongevoelig en met
+  core-URN-prefix toegestaan; `schemas` dat geen lijst is en een lege wijziging geven `400` in
+  plaats van een `500` of een stille `204`; foutresponses dragen een `scimType`.
+
 - **Breaking:** legacy `/auth/webhook/*` receivers removed (zie Removed).
 
 ### Added

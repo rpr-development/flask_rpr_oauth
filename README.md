@@ -919,7 +919,12 @@ Foutcontract: een exception in een callback geeft `500` — de scim-worker zet d
 terug in de wachtrij en probeert het opnieuw (tot 5×). Een ontbrekende sync-/delete-callback
 geeft `501`; een `GET` zonder callback geeft `404` (= dit systeem heeft geen exportdata); een
 `PATCH` zonder callback geeft `204` (de sessies zijn dan al beëindigd). Een PATCH met iets anders
-dan `replace` van `active` geeft `400`.
+dan `replace` van `active` geeft `400` met een `scimType`. Een PATCH met `active: false` vereist dat
+de package sessies kan beëindigen: Redis voor de uitlog-markering (`OAUTH_LOGOUT_REDIS_URL` of de
+`SESSION_REDIS` van Flask-Session) en `OAUTH_ENABLE_BACKCHANNEL_LOGOUT` aan (default). Ontbreekt
+dat of is Redis onbereikbaar, dan is het antwoord `503`, zodat de auth-server het later opnieuw
+probeert in plaats van de deactivering als gedaan te boeken; dat gaat vóór de `404` voor een
+onbekende gebruiker, want een sessie hangt aan de `sub` en niet aan de rij in de app.
 Server-kant inschakelen: zet de SCIM-basis-URL op de applicatie in het
 admin-dashboard (Resource servers → Applicaties), bijv. `https://jouw-app/scim/v2`.
 
