@@ -295,3 +295,166 @@ def test_patch_callback_fout_geeft_500(app, client, valid_token, fake_redis):
     app.config["OAUTH_ON_SCIM_PATCH"] = _boom
     resp = client.patch("/scim/v2/Users/42", json=_patch(), headers=_headers())
     assert resp.status_code == 500
+
+
+# ------------------------------------------------------------------ patch: robuustheid (v2.2.1)
+
+
+class _KapotteRedis:
+    def setex(self, key, ttl, value):
+        raise ConnectionError("redis down")
+
+    def get(self, key):
+        raise ConnectionError("redis down")
+
+
+def test_patch_zonder_redis_geeft_503_maar_draait_callback(
+    app, client, valid_token, auth, monkeypatch
+):
+    calls = []
+    app.config["OAUTH_ON_SCIM_PATCH"] = lambda user_id, changes: calls.append(changes) or True
+    monkeypatch.setattr(auth, "_logout_redis", lambda: None)
+
+    resp = client.patch("/scim/v2/Users/42", json=_patch(), headers=_headers())
+
+    assert resp.status_code == 503
+    assert calls == [{"active": False}]  # the app still does its own part (e.g. close sockets)
+
+
+def test_patch_met_onbereikbare_redis_geeft_503(app, client, valid_token, auth, monkeypatch):
+    monkeypatch.setattr(auth, "_logout_redis", lambda: _KapotteRedis())
+
+    resp = client.patch("/scim/v2/Users/42", json=_patch(), headers=_headers())
+
+    assert resp.status_code == 503
+
+
+def test_patch_met_backchannel_logout_uit_geeft_503(app, client, valid_token, fake_redis):
+    app.config["OAUTH_ENABLE_BACKCHANNEL_LOGOUT"] = False
+
+    resp = client.patch("/scim/v2/Users/42", json=_patch(), headers=_headers())
+
+    assert resp.status_code == 503
+    assert fake_redis.store == {}  # a marker nobody checks would only pretend the sessions ended
+
+
+def test_patch_onbekende_gebruiker_zonder_redis_wordt_opnieuw_geprobeerd(
+    app, client, valid_token, auth, monkeypatch
+):
+    # The app has no row for the user, but a session for that sub may still exist.
+    app.config["OAUTH_ON_SCIM_PATCH"] = lambda user_id, changes: False
+    monkeypatch.setattr(auth, "_logout_redis", lambda: None)
+
+    resp = client.patch("/scim/v2/Users/42", json=_patch(), headers=_headers())
+
+    assert resp.status_code == 503
+
+
+def test_patch_activeren_vereist_geen_redis(app, client, valid_token, auth, monkeypatch):
+    app.config["OAUTH_ON_SCIM_PATCH"] = lambda user_id, changes: True
+    monkeypatch.setattr(auth, "_logout_redis", lambda: None)
+
+    resp = client.patch("/scim/v2/Users/42", json=_patch(waarde=True), headers=_headers())
+
+    assert resp.status_code == 204
+
+
+@pytest.mark.parametrize(
+    "operatie",
+    [
+        {"op": "Replace", "path": "Active", "value": False},
+        {
+            "op": "REPLACE",
+            "path": "urn:ietf:params:scim:schemas:core:2.0:User:active",
+            "value": False,
+        },
+        {"op": "replace", "value": {"Active": False}},
+    ],
+)
+def test_patch_attribuutnamen_hoofdletterongevoelig(app, client, valid_token, fake_redis, operatie):
+    calls = []
+    app.config["OAUTH_ON_SCIM_PATCH"] = lambda user_id, changes: calls.append(changes) or True
+
+    resp = client.patch(
+        "/scim/v2/Users/42",
+        json={"schemas": [PATCH_OP], "Operations": [operatie]},
+        headers=_headers(),
+    )
+
+    assert resp.status_code == 204
+    assert calls == [{"active": False}]
+
+
+def test_patch_laatste_operatie_telt(app, client, valid_token, fake_redis):
+    calls = []
+    app.config["OAUTH_ON_SCIM_PATCH"] = lambda user_id, changes: calls.append(changes) or True
+    body = {
+        "schemas": [PATCH_OP],
+        "Operations": [
+            {"op": "replace", "path": "active", "value": False},
+            {"op": "replace", "path": "active", "value": True},
+        ],
+    }
+
+    resp = client.patch("/scim/v2/Users/42", json=body, headers=_headers())
+
+    assert resp.status_code == 204
+    assert calls == [{"active": True}]
+    assert fake_redis.store == {}  # the final state is active: nothing to end
+
+
+@pytest.mark.parametrize(
+    ("body", "scim_type"),
+    [
+        (
+            {"schemas": 7, "Operations": [{"op": "replace", "path": "active", "value": False}]},
+            "invalidSyntax",
+        ),
+        (
+            {
+                "schemas": PATCH_OP,
+                "Operations": [{"op": "replace", "path": "active", "value": False}],
+            },
+            "invalidSyntax",
+        ),
+        ({"schemas": [PATCH_OP], "Operations": [{"op": "replace", "value": {}}]}, "invalidValue"),
+        (
+            {
+                "schemas": [PATCH_OP],
+                "Operations": [{"op": "replace", "path": "userName", "value": "x"}],
+            },
+            "invalidPath",
+        ),
+        (
+            {
+                "schemas": [PATCH_OP],
+                "Operations": [{"op": "replace", "path": "active", "value": "false"}],
+            },
+            "invalidValue",
+        ),
+        (
+            {
+                "schemas": [PATCH_OP],
+                "Operations": [{"op": "add", "path": "active", "value": False}],
+            },
+            "invalidSyntax",
+        ),
+    ],
+)
+def test_patch_ongeldige_invoer_geeft_400_met_scimtype(
+    app, client, valid_token, fake_redis, body, scim_type
+):
+    resp = client.patch("/scim/v2/Users/42", json=body, headers=_headers())
+
+    assert resp.status_code == 400
+    assert resp.get_json()["scimType"] == scim_type
+    assert fake_redis.store == {}
+
+
+def test_patch_valt_onder_de_scim_toegangscontrole(app, client):
+    resp = client.patch("/scim/v2/Users/42", json=_patch())
+    assert resp.status_code == 401
+
+    app.config["OAUTH_ENABLE_SCIM"] = False
+    resp = client.patch("/scim/v2/Users/42", json=_patch(), headers=_headers())
+    assert resp.status_code == 404

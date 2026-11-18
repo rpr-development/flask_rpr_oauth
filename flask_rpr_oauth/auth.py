@@ -98,6 +98,16 @@ _SSF_CACHE_INVALIDATE_EVENTS = {RISC_ACCOUNT_DISABLED, RISC_ACCOUNT_PURGED, CAEP
 
 # RFC 7644 §3.5.2: berichtschema van een SCIM PATCH-request.
 _SCIM_PATCH_OP_SCHEMA = "urn:ietf:params:scim:api:messages:2.0:PatchOp"
+_SCIM_CORE_USER_PREFIX = "urn:ietf:params:scim:schemas:core:2.0:user:"
+
+
+def _scim_attribute_name(attribute):
+    """Attribuutnaam uit een PATCH-pad of value-sleutel: hoofdletterongevoelig, zonder core-URN-prefix."""
+    if not isinstance(attribute, str):
+        return None
+    name = attribute.strip().lower()
+    return name[len(_SCIM_CORE_USER_PREFIX) :] if name.startswith(_SCIM_CORE_USER_PREFIX) else name
+
 
 # Verwachte JWT `typ`-header per SET-soort (RPR-API zet deze altijd; een ontbrekende of
 # verkeerde typ wijst op een verkeerd/vervalst token op het verkeerde endpoint).
@@ -1355,20 +1365,20 @@ class RPRAuth:
         resp.headers["Cache-Control"] = "no-store"
         return resp, status
 
-    def _scim_error(self, status, detail):
-        """SCIM-foutrespons (RFC 7644 §3.12)."""
+    def _scim_error(self, status, detail, scim_type=None):
+        """SCIM-foutrespons (RFC 7644 §3.12), met ``scimType`` als die is opgegeven."""
         if status >= 500:
             logger.error("SCIM-request mislukt (%s): %s", status, detail)
         else:
             logger.warning("SCIM-request geweigerd (%s): %s", status, detail)
-        return self._scim_response(
-            {
-                "schemas": ["urn:ietf:params:scim:api:messages:2.0:Error"],
-                "status": str(status),
-                "detail": detail,
-            },
-            status,
-        )
+        body = {
+            "schemas": ["urn:ietf:params:scim:api:messages:2.0:Error"],
+            "status": str(status),
+            "detail": detail,
+        }
+        if scim_type:
+            body["scimType"] = scim_type
+        return self._scim_response(body, status)
 
     def _scim_guard(self):
         """Toegangscontrole voor de SCIM-routes.
@@ -1472,45 +1482,80 @@ class RPRAuth:
         'm daar opnieuw aanmaken (upsert). Alleen ``replace`` van ``active`` (boolean) wordt
         ondersteund, met of zonder ``path``; al het andere geeft 400.
 
-        Bij ``active: false`` beëindigt de package eerst zelf alle sessies van de gebruiker in
-        deze app (dezelfde uitlog-markering en cache-invalidatie als een SSF account-disabled),
-        zodat dat ook geldt voor een app zonder callback. De callback
-        ``OAUTH_ON_SCIM_PATCH(user_id, changes)`` is optioneel en geeft ``False`` als de
-        gebruiker hier onbekend is (404); zonder callback is het antwoord 204.
+        Operaties worden in volgorde toegepast (de laatste waarde van ``active`` telt).
+        Attribuutnamen zijn hoofdletterongevoelig en mogen het volledige core-schema-URN dragen
+        (RFC 7643 §2.1, RFC 7644 §3.10).
+
+        Bij ``active: false`` beëindigt de package zelf alle sessies van de gebruiker in deze
+        app (dezelfde uitlog-markering en cache-invalidatie als een SSF account-disabled), zodat
+        dat ook geldt voor een app zonder callback. Dat vereist Redis voor de uitlog-markering en
+        ``OAUTH_ENABLE_BACKCHANNEL_LOGOUT`` (die de markering bij elk request controleert). Lukt
+        het niet, dan is het antwoord 503: de afzender probeert het later opnieuw in plaats van
+        een deactivering als gedaan te boeken terwijl de sessies doorlopen.
+
+        De callback ``OAUTH_ON_SCIM_PATCH(user_id, changes)`` is optioneel en geeft ``False`` als
+        de gebruiker hier onbekend is (404); hij draait ook als de sessies niet beëindigd konden
+        worden, zodat de app haar eigen deel (bv. sockets sluiten) toch doet. Zonder callback en
+        met beëindigde sessies is het antwoord 204.
         """
         body = request.get_json(silent=True)
-        if not isinstance(body, dict) or _SCIM_PATCH_OP_SCHEMA not in (body.get("schemas") or []):
-            return self._scim_error(400, "PatchOp-bericht vereist (RFC 7644 §3.5.2)")
+        schemas = body.get("schemas") if isinstance(body, dict) else None
+        if not isinstance(schemas, list) or _SCIM_PATCH_OP_SCHEMA not in schemas:
+            return self._scim_error(
+                400, "PatchOp-bericht vereist (RFC 7644 §3.5.2)", scim_type="invalidSyntax"
+            )
         operations = body.get("Operations")
         if not isinstance(operations, list) or not operations:
-            return self._scim_error(400, "Operations ontbreekt of is leeg")
+            return self._scim_error(
+                400, "Operations ontbreekt of is leeg", scim_type="invalidSyntax"
+            )
         changes = {}
         for operation in operations:
             if not isinstance(operation, dict) or str(operation.get("op", "")).lower() != "replace":
-                return self._scim_error(400, "alleen de operatie 'replace' wordt ondersteund")
+                return self._scim_error(
+                    400, "alleen de operatie 'replace' wordt ondersteund", scim_type="invalidSyntax"
+                )
             path, value = operation.get("path"), operation.get("value")
             items = value.items() if path is None and isinstance(value, dict) else [(path, value)]
             for attribute, new_value in items:
-                if attribute != "active" or not isinstance(new_value, bool):
+                if _scim_attribute_name(attribute) != "active":
                     return self._scim_error(
-                        400, "alleen 'active' (true/false) kan worden gewijzigd"
+                        400, "alleen 'active' kan worden gewijzigd", scim_type="invalidPath"
+                    )
+                if not isinstance(new_value, bool):
+                    return self._scim_error(
+                        400, "'active' moet true of false zijn", scim_type="invalidValue"
                     )
                 changes["active"] = new_value
+        if not changes:
+            return self._scim_error(400, "geen wijziging opgegeven", scim_type="invalidValue")
 
-        if changes.get("active") is False:
+        sessies_beeindigd = True
+        if changes["active"] is False:
             # Geen sessie mag een deactivering overleven, ook niet in een app die alleen logt.
-            self._mark_logged_out(user_id)
+            sessies_beeindigd = bool(
+                current_app.config.get("OAUTH_ENABLE_BACKCHANNEL_LOGOUT", True)
+            ) and self._mark_logged_out(user_id)
             self._invalidate_userinfo_cache_for_sub(user_id)
 
         cb = current_app.config.get("OAUTH_ON_SCIM_PATCH")
+        known = None
         if cb is not None:
             try:
                 known = cb(user_id, changes)
             except Exception:
                 logger.exception("SCIM patch-callback faalde voor user=%s", user_id)
                 return self._scim_error(500, "verwerking mislukt in het doelsysteem")
-            if known is False:
-                return self._scim_error(404, "gebruiker onbekend op dit systeem")
+        # Before the 404: sessions belong to the sub, not to the app's user row, so a user the app
+        # does not know can still be logged in, and a 404 would end the caller's retries.
+        if not sessies_beeindigd:
+            return self._scim_error(
+                503,
+                "sessies konden niet worden beëindigd: Redis voor de uitlog-markering ontbreekt of is "
+                "onbereikbaar, of OAUTH_ENABLE_BACKCHANNEL_LOGOUT staat uit",
+            )
+        if cb is not None and known is False:
+            return self._scim_error(404, "gebruiker onbekend op dit systeem")
         logger.info("SCIM patch verwerkt voor user=%s: %s", user_id, changes)
         return "", 204
 
