@@ -96,6 +96,9 @@ _SSF_KNOWN_EVENTS = set(_SSF_CALLBACK_KEYS) | {BACKCHANNEL_LOGOUT_EVENT}
 # hier bewust niet mee (geen sessie-/autorisatie-impact op zichzelf).
 _SSF_CACHE_INVALIDATE_EVENTS = {RISC_ACCOUNT_DISABLED, RISC_ACCOUNT_PURGED, CAEP_SESSION_REVOKED}
 
+# RFC 7644 §3.5.2: berichtschema van een SCIM PATCH-request.
+_SCIM_PATCH_OP_SCHEMA = "urn:ietf:params:scim:api:messages:2.0:PatchOp"
+
 # Verwachte JWT `typ`-header per SET-soort (RPR-API zet deze altijd; een ontbrekende of
 # verkeerde typ wijst op een verkeerd/vervalst token op het verkeerde endpoint).
 _BCL_JWT_TYP = "logout+jwt"
@@ -330,6 +333,9 @@ class RPRAuth:
         #   OAUTH_ON_SCIM_SYNC(user_id: str, resource: dict)  — user aangemaakt/gewijzigd
         #   OAUTH_ON_SCIM_DELETE(user_id: str)                — user verwijderd (idempotent)
         #   OAUTH_ON_SCIM_GET(user_id: str) -> dict | None    — optioneel: AVG-exportdata
+        #   OAUTH_ON_SCIM_PATCH(user_id: str, changes: dict) -> bool
+        #                                                     — optioneel: user (de)geactiveerd
+        #                                                       zonder upsert; False = onbekend (404)
         app.config.setdefault("OAUTH_ENABLE_SCIM", False)
         app.config.setdefault("OAUTH_SCIM_PERMISSION", "auth.scim.provision")
 
@@ -1417,17 +1423,20 @@ class RPRAuth:
 
     @csrf_exempt
     def _handle_scim_user(self, user_id):
-        """GET/PUT/DELETE /scim/v2/Users/<user_id> — de per-user provisioning-operaties.
+        """GET/PUT/PATCH/DELETE /scim/v2/Users/<user_id> — de per-user provisioning-operaties.
 
         Contract met de RPR-API scim-worker: PUT is een **upsert** (bestaat de gebruiker
         lokaal nog niet, maak 'm dan aan — de worker hoeft dan nooit op POST terug te
-        vallen), DELETE is idempotent (al weg = ook goed) en GET voedt de AVG-export.
+        vallen), PATCH wijzigt alleen ``active`` en maakt nooit iets aan, DELETE is
+        idempotent (al weg = ook goed) en GET voedt de AVG-export.
         """
         denied = self._scim_guard()
         if denied is not None:
             return denied
         if request.method == "PUT":
             return self._scim_upsert(str(user_id), created=False)
+        if request.method == "PATCH":
+            return self._scim_patch(str(user_id))
         if request.method == "DELETE":
             return self._scim_delete(str(user_id))
         return self._scim_get(str(user_id))
@@ -1454,6 +1463,56 @@ class RPRAuth:
         body["id"] = user_id
         logger.info("SCIM %s verwerkt voor user=%s", "create" if created else "sync", user_id)
         return self._scim_response(body, 201 if created else 200)
+
+    def _scim_patch(self, user_id):
+        """PATCH-verwerking (RFC 7644 §3.5.2), beperkt tot ``active``: maakt nooit een gebruiker aan.
+
+        De auth-server gebruikt dit om een account te deactiveren waarvan de verwijdering is
+        goedgekeurd, bij een systeem dat de gebruiker misschien al gewist heeft: een PUT zou
+        'm daar opnieuw aanmaken (upsert). Alleen ``replace`` van ``active`` (boolean) wordt
+        ondersteund, met of zonder ``path``; al het andere geeft 400.
+
+        Bij ``active: false`` beëindigt de package eerst zelf alle sessies van de gebruiker in
+        deze app (dezelfde uitlog-markering en cache-invalidatie als een SSF account-disabled),
+        zodat dat ook geldt voor een app zonder callback. De callback
+        ``OAUTH_ON_SCIM_PATCH(user_id, changes)`` is optioneel en geeft ``False`` als de
+        gebruiker hier onbekend is (404); zonder callback is het antwoord 204.
+        """
+        body = request.get_json(silent=True)
+        if not isinstance(body, dict) or _SCIM_PATCH_OP_SCHEMA not in (body.get("schemas") or []):
+            return self._scim_error(400, "PatchOp-bericht vereist (RFC 7644 §3.5.2)")
+        operations = body.get("Operations")
+        if not isinstance(operations, list) or not operations:
+            return self._scim_error(400, "Operations ontbreekt of is leeg")
+        changes = {}
+        for operation in operations:
+            if not isinstance(operation, dict) or str(operation.get("op", "")).lower() != "replace":
+                return self._scim_error(400, "alleen de operatie 'replace' wordt ondersteund")
+            path, value = operation.get("path"), operation.get("value")
+            items = value.items() if path is None and isinstance(value, dict) else [(path, value)]
+            for attribute, new_value in items:
+                if attribute != "active" or not isinstance(new_value, bool):
+                    return self._scim_error(
+                        400, "alleen 'active' (true/false) kan worden gewijzigd"
+                    )
+                changes["active"] = new_value
+
+        if changes.get("active") is False:
+            # Geen sessie mag een deactivering overleven, ook niet in een app die alleen logt.
+            self._mark_logged_out(user_id)
+            self._invalidate_userinfo_cache_for_sub(user_id)
+
+        cb = current_app.config.get("OAUTH_ON_SCIM_PATCH")
+        if cb is not None:
+            try:
+                known = cb(user_id, changes)
+            except Exception:
+                logger.exception("SCIM patch-callback faalde voor user=%s", user_id)
+                return self._scim_error(500, "verwerking mislukt in het doelsysteem")
+            if known is False:
+                return self._scim_error(404, "gebruiker onbekend op dit systeem")
+        logger.info("SCIM patch verwerkt voor user=%s: %s", user_id, changes)
+        return "", 204
 
     def _scim_delete(self, user_id):
         """DELETE-verwerking: app-callback; idempotent per RFC 7644 §3.6."""
@@ -1563,7 +1622,7 @@ class RPRAuth:
             "/Users/<user_id>",
             "user",
             self._handle_scim_user,
-            methods=["GET", "PUT", "DELETE"],
+            methods=["GET", "PUT", "PATCH", "DELETE"],
         )
         app.register_blueprint(scim_bp)
 

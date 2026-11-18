@@ -320,7 +320,7 @@ De package registreert automatisch de volgende routes:
 - `GET, POST /auth/session-bootstrap` - Bearer-based auto-login: zet een first-party sessie op vanuit een aangeleverd access token (via POST `access_token` (voorkeur) / GET-query / `Authorization: Bearer`), NIET een code. Alleen actief als `OAUTH_ENABLE_SESSION_BOOTSTRAP=True`.
 - `POST /auth/backchannel-logout` - Ontvanger voor ondertekende logout tokens (OIDC Back-Channel Logout 1.0); default aan
 - `POST /auth/ssf` - Gedeelde ontvanger voor Security Event Tokens (SSF/RISC/CAEP, RFC 8417); default aan
-- `POST /scim/v2/Users` en `GET, PUT, DELETE /scim/v2/Users/<id>` - SCIM 2.0-provisioning; alleen actief met `OAUTH_ENABLE_SCIM=True`
+- `POST /scim/v2/Users` en `GET, PUT, PATCH, DELETE /scim/v2/Users/<id>` - SCIM 2.0-provisioning; alleen actief met `OAUTH_ENABLE_SCIM=True`
 
 ## Current User
 
@@ -874,6 +874,7 @@ Contract met de auth-server (de scim-worker):
 | --- | --- | --- |
 | `PUT /Users/<id>` | User aangemaakt/gewijzigd | **Upsert**: bestaat 'ie lokaal niet, maak 'm aan |
 | `POST /Users` | Create-fallback (`externalId` = user-id) | Zelfde als PUT |
+| `PATCH /Users/<id>` | Alleen `active` gewijzigd (bv. verwijdering goedgekeurd) | **Nooit aanmaken**. Bij `active: false` beëindigt de package zelf alle sessies van de gebruiker; de callback is optioneel |
 | `DELETE /Users/<id>` | User verwijderd | Idempotent: al weg = ook goed (204) |
 | `GET /Users/<id>` | AVG-export (privacy-worker) | Lokale data teruggeven, of 404 |
 
@@ -895,10 +896,19 @@ def scim_get(user_id):
     """Optioneel: lokale data voor de AVG-export. None = gebruiker onbekend (404)."""
     ...
 
+def scim_patch(user_id, changes):
+    """Optioneel: changes = {'active': bool}. Nooit aanmaken; False = onbekend (404)."""
+    ...
+
 app.config['OAUTH_ON_SCIM_SYNC'] = scim_sync
 app.config['OAUTH_ON_SCIM_DELETE'] = scim_delete
 app.config['OAUTH_ON_SCIM_GET'] = scim_get      # optioneel
+app.config['OAUTH_ON_SCIM_PATCH'] = scim_patch  # optioneel
 ```
+
+Waarom PATCH naast PUT: de auth-server deactiveert een account zodra een verwijderverzoek is
+goedgekeurd. Op dat moment kan een systeem de gebruiker al gewist hebben, en een PUT (upsert)
+zou 'm daar opnieuw aanmaken. PATCH wijzigt alleen een bestaande gebruiker.
 
 Beveiliging: elk SCIM-request vereist een Bearer **M2M-token** dat via introspectie
 valideert (inclusief de audience-check hierboven) én de provisioning-permissie draagt
@@ -907,7 +917,9 @@ scim-worker op de auth-server).
 
 Foutcontract: een exception in een callback geeft `500` — de scim-worker zet de job dan
 terug in de wachtrij en probeert het opnieuw (tot 5×). Een ontbrekende sync-/delete-callback
-geeft `501`; een `GET` zonder callback geeft `404` (= dit systeem heeft geen exportdata).
+geeft `501`; een `GET` zonder callback geeft `404` (= dit systeem heeft geen exportdata); een
+`PATCH` zonder callback geeft `204` (de sessies zijn dan al beëindigd). Een PATCH met iets anders
+dan `replace` van `active` geeft `400`.
 Server-kant inschakelen: zet de SCIM-basis-URL op de applicatie in het
 admin-dashboard (Resource servers → Applicaties), bijv. `https://jouw-app/scim/v2`.
 
