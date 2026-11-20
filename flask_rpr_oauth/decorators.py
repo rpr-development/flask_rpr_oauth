@@ -23,6 +23,34 @@ _BLOCKED_STATUSES = {
 }
 
 
+_UNMAPPED = object()
+
+
+def _requirement_for_method(method_requirements):
+    """
+    Requirement that the per-method mapping sets for this request's method.
+
+    Returns ``_UNMAPPED`` when the mapping does not name the method. An explicit ``None``
+    in the mapping means the method needs no permission or group.
+    """
+    method = request.method.upper()
+    # Flask routes HEAD to the GET view, so a HEAD must meet what GET requires; otherwise
+    # it would reach the view unchecked and run whatever the view does for non-GET.
+    if method == "HEAD" and "HEAD" not in method_requirements:
+        method = "GET"
+    return method_requirements.get(method, _UNMAPPED)
+
+
+def _refuse_unmapped_method(decorator_name, method_requirements):
+    """Fail closed: a route method the mapping forgot must not run the view unchecked."""
+    logger.warning(
+        f"{decorator_name}: {request.method} {request.path} has no entry in the per-method "
+        f"mapping ({', '.join(sorted(method_requirements))}); refusing with 405. Map it, "
+        f"or pass {request.method}=None to allow it without a check."
+    )
+    abort(405)
+
+
 def _check_user_status():
     """
     Controleer of de ingelogde gebruiker een geblokkeerde status heeft.
@@ -285,6 +313,11 @@ def permission_required(permission=None, **method_permissions):
         permission (str): Required permission string (for all methods)
         **method_permissions: Per-method permissions (GET="view", POST="edit", etc.)
 
+    With per-method permissions, a request whose method is not in the mapping is refused
+    with 405, so a route method that was left out never runs the view unchecked. HEAD
+    needs what GET needs (Flask serves HEAD with the GET view). Map a method to ``None``
+    to let it through without a permission check.
+
     Examples:
         # Single permission for all methods
         @app.route('/admin')
@@ -304,10 +337,11 @@ def permission_required(permission=None, **method_permissions):
         def decorated_function(*args, **kwargs):
             # Determine required permission based on HTTP method
             if method_permissions:
-                method = request.method.upper()
-                required_permission = method_permissions.get(method)
+                required_permission = _requirement_for_method(method_permissions)
+                if required_permission is _UNMAPPED:
+                    _refuse_unmapped_method("permission_required", method_permissions)
                 if required_permission is None:
-                    # No permission specified for this method - allow access
+                    # Explicitly mapped to None: no permission needed for this method.
                     # Check for Bearer token to inject userinfo
                     if _is_bearer_token_request():
                         token = _get_bearer_token()
@@ -389,7 +423,9 @@ def any_permission_required(*permissions, **method_permissions):
 
     Args:
         *permissions: Variable aantal permission strings (for all methods)
-        **method_permissions: Per-method permission lists (GET="perm1,perm2", POST="perm3,perm4")
+        **method_permissions: Per-method permission lists (GET="perm1,perm2", POST="perm3,perm4").
+            Unmapped methods are refused with 405 and HEAD follows GET, as in
+            permission_required; map a method to ``None`` to skip the check.
 
     Examples:
         # Single set of permissions for all methods
@@ -410,10 +446,11 @@ def any_permission_required(*permissions, **method_permissions):
         def decorated_function(*args, **kwargs):
             # Determine required permissions based on HTTP method
             if method_permissions:
-                method = request.method.upper()
-                method_perms_str = method_permissions.get(method)
+                method_perms_str = _requirement_for_method(method_permissions)
+                if method_perms_str is _UNMAPPED:
+                    _refuse_unmapped_method("any_permission_required", method_permissions)
                 if method_perms_str is None:
-                    # No permissions specified for this method - allow access
+                    # Explicitly mapped to None: no permission needed for this method.
                     if _is_bearer_token_request():
                         token = _get_bearer_token()
                         userinfo = _get_userinfo_from_token(token)
@@ -499,7 +536,9 @@ def group_required(group=None, **method_groups):
 
     Args:
         group (str): Required group name (for all methods)
-        **method_groups: Per-method groups (GET="viewers", POST="editors", etc.)
+        **method_groups: Per-method groups (GET="viewers", POST="editors", etc.).
+            Unmapped methods are refused with 405 and HEAD follows GET, as in
+            permission_required; map a method to ``None`` to skip the check.
 
     Examples:
         # Single group for all methods
@@ -520,10 +559,11 @@ def group_required(group=None, **method_groups):
         def decorated_function(*args, **kwargs):
             # Determine required group based on HTTP method
             if method_groups:
-                method = request.method.upper()
-                required_group = method_groups.get(method)
+                required_group = _requirement_for_method(method_groups)
+                if required_group is _UNMAPPED:
+                    _refuse_unmapped_method("group_required", method_groups)
                 if required_group is None:
-                    # No group specified for this method - allow access
+                    # Explicitly mapped to None: no group needed for this method.
                     if _is_bearer_token_request():
                         token = _get_bearer_token()
                         userinfo = _get_userinfo_from_token(token)
@@ -604,7 +644,9 @@ def any_group_required(*groups, **method_groups):
 
     Args:
         *groups: Variable aantal group names (for all methods)
-        **method_groups: Per-method group lists (GET="group1,group2", POST="group3,group4")
+        **method_groups: Per-method group lists (GET="group1,group2", POST="group3,group4").
+            Unmapped methods are refused with 405 and HEAD follows GET, as in
+            permission_required; map a method to ``None`` to skip the check.
 
     Examples:
         # Single set of groups for all methods
@@ -625,10 +667,11 @@ def any_group_required(*groups, **method_groups):
         def decorated_function(*args, **kwargs):
             # Determine required groups based on HTTP method
             if method_groups:
-                method = request.method.upper()
-                method_grps_str = method_groups.get(method)
+                method_grps_str = _requirement_for_method(method_groups)
+                if method_grps_str is _UNMAPPED:
+                    _refuse_unmapped_method("any_group_required", method_groups)
                 if method_grps_str is None:
-                    # No groups specified for this method - allow access
+                    # Explicitly mapped to None: no group needed for this method.
                     if _is_bearer_token_request():
                         token = _get_bearer_token()
                         userinfo = _get_userinfo_from_token(token)

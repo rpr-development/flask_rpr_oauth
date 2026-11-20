@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- **Per-methode-decorators weigeren methoden zonder mapping** (`permission_required`,
+  `any_permission_required`, `group_required`, `any_group_required`). Een methode die niet in de
+  mapping stond, liep tot nu toe zonder enige controle de view in. Omdat Flask aan elke GET-route
+  automatisch HEAD toevoegt, kon een HEAD-verzoek zonder login zo de schrijftak van een view
+  bereiken (in GMS: een parser verwijderen). Nu krijgt HEAD dezelfde eis als GET, en geeft elke
+  andere ongemapte methode een `405` met een waarschuwing in de log.
+  Wie bewust een methode zonder controle wil openzetten, mapt die expliciet op `None`, bv.
+  `@permission_required(GET=None, POST="melding.edit")`. Geen bekende afnemer leunde op een
+  ongemapte methode: in GMS, de enige gebruiker van de per-methode-variant, is elke methode gemapt.
+
 ### Fixed
 - **SCIM `PATCH` meldt sessies die niet beëindigd konden worden**: bij `active: false` zonder
   bruikbare uitlog-markering (geen Redis, Redis onbereikbaar of `OAUTH_ENABLE_BACKCHANNEL_LOGOUT`
