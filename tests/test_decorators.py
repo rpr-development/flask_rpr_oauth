@@ -38,17 +38,17 @@ def app():
     def legacy_endpoint(userinfo=None):
         return jsonify({"status": "ok", "method": "legacy"})
 
-    @app.route("/any-perm", methods=["GET", "POST"])
+    @app.route("/any-perm", methods=["GET", "POST", "PUT"])
     @any_permission_required(GET="view1,view2", POST="edit1,edit2")
     def any_perm_endpoint(userinfo=None):
         return jsonify({"status": "ok", "method": "any-perm"})
 
-    @app.route("/groups", methods=["GET", "POST"])
+    @app.route("/groups", methods=["GET", "POST", "PUT"])
     @group_required(GET="viewers", POST="editors")
     def groups_endpoint(userinfo=None):
         return jsonify({"status": "ok", "method": "groups"})
 
-    @app.route("/any-groups", methods=["GET", "POST"])
+    @app.route("/any-groups", methods=["GET", "POST", "PUT"])
     @any_group_required(GET="viewers,guests", POST="editors,admins")
     def any_groups_endpoint(userinfo=None):
         return jsonify({"status": "ok", "method": "any-groups"})
@@ -57,6 +57,11 @@ def app():
     @permission_required(GET="read", POST="write")
     def partial_endpoint(userinfo=None):
         return jsonify({"status": "ok", "method": "partial"})
+
+    @app.route("/public-get", methods=["GET", "POST"])
+    @permission_required(GET=None, POST="write")
+    def public_get_endpoint(userinfo=None):
+        return jsonify({"status": "ok", "method": "public-get"})
 
     return app
 
@@ -118,9 +123,9 @@ class TestPermissionRequiredMethodSpecific:
             response = client.post("/melding")
             assert response.status_code == 403
 
-    def test_method_not_specified_allows_access(self, client):
-        """Test that methods without specified permissions allow access."""
-        userinfo = {"sub": "user1", "permissions": [], "token_type": "user"}
+    def test_method_not_specified_is_refused(self, client):
+        """A route method missing from the mapping is refused instead of running unchecked."""
+        userinfo = {"sub": "user1", "permissions": ["read", "write"], "token_type": "user"}
 
         with (
             patch("flask_rpr_oauth.decorators._is_bearer_token_request", return_value=True),
@@ -128,7 +133,39 @@ class TestPermissionRequiredMethodSpecific:
             patch("flask_rpr_oauth.decorators._get_userinfo_from_token", return_value=userinfo),
         ):
             response = client.put("/partial")
-            assert response.status_code == 200
+            assert response.status_code == 405
+
+    def test_method_not_specified_is_refused_without_login(self, client):
+        """Without any credentials an unmapped method must not reach the view either."""
+        response = client.put("/partial")
+        assert response.status_code == 405
+
+    def test_method_mapped_to_none_allows_access(self, client):
+        """An explicit None opts a method out of the check."""
+        response = client.get("/public-get")
+        assert response.status_code == 200
+
+    def test_head_needs_the_get_permission(self, client):
+        """HEAD is served by the GET view, so it must meet the GET requirement."""
+        zonder = {"sub": "user1", "permissions": ["melding.edit"], "token_type": "user"}
+        met = {"sub": "user1", "permissions": ["melding.view"], "token_type": "user"}
+
+        for userinfo, verwacht in ((zonder, 403), (met, 200)):
+            with (
+                patch("flask_rpr_oauth.decorators._is_bearer_token_request", return_value=True),
+                patch("flask_rpr_oauth.decorators._get_bearer_token", return_value="token"),
+                patch("flask_rpr_oauth.decorators._get_userinfo_from_token", return_value=userinfo),
+            ):
+                assert client.head("/melding").status_code == verwacht
+
+    def test_head_without_login_is_not_let_through(self, client):
+        """The original hole: an anonymous HEAD ran the view with no check at all."""
+        assert client.head("/melding").status_code == 401
+
+    @pytest.mark.parametrize("path", ["/any-perm", "/groups", "/any-groups"])
+    def test_other_decorators_refuse_unmapped_methods(self, client, path):
+        """any_permission_required and the group decorators fail closed in the same way."""
+        assert client.put(path).status_code == 405
 
 
 class TestPermissionRequiredLegacy:
